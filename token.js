@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, getDocs, deleteDoc, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, deleteDoc, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
@@ -13,6 +13,73 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+// 🔒 token.html 専用のパスワード認証 (20010904)
+document.addEventListener("DOMContentLoaded", () => {
+    const overlay = document.getElementById("token-auth-overlay");
+    const submitBtn = document.getElementById("token-submit-btn");
+    const passInput = document.getElementById("token-password-input");
+    const errorMsg = document.getElementById("token-error-msg");
+
+    if (submitBtn) {
+        submitBtn.addEventListener("click", () => {
+            if (passInput.value.trim() === "20010904") {
+                overlay.style.display = "none";
+            } else {
+                errorMsg.textContent = "❌ パスワードが違います。";
+                errorMsg.style.display = "block";
+            }
+        });
+    }
+
+    if (passInput) {
+        passInput.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") submitBtn.click();
+        });
+    }
+
+    // 🔑 お客様用パスワードのロードと保存処理
+    const customerPassInput = document.getElementById("customer-pass-input");
+    const saveCustomerPassBtn = document.getElementById("save-customer-pass-btn");
+
+    async function loadCurrentCustomerPassword() {
+        try {
+            const configDoc = await getDoc(doc(db, "settings", "app_config"));
+            if (configDoc.exists()) {
+                customerPassInput.value = configDoc.data().customerPassword || "bunka2026";
+            } else {
+                customerPassInput.value = "bunka2026";
+            }
+        } catch (e) {
+            console.error("パスワード読込エラー:", e);
+        }
+    }
+    loadCurrentCustomerPassword();
+
+    if (saveCustomerPassBtn) {
+        saveCustomerPassBtn.addEventListener("click", async () => {
+            const newPass = customerPassInput.value.trim();
+            if (!newPass) {
+                alert("パスワードを入力してください。");
+                return;
+            }
+
+            if (confirm(`お客様用パスワードを「${newPass}」に変更しますか？\n（変更すると、現在ログイン中のお客様は自動的にログアウトされます）`)) {
+                try {
+                    // 💡 ドキュメントを確実に作成・上書き保存
+                    await setDoc(doc(db, "settings", "app_config"), {
+                        customerPassword: newPass,
+                        updatedAt: new Date().toISOString()
+                    });
+                    alert("お客様用パスワードを変更しました！");
+                } catch (e) {
+                    console.error("保存エラー詳細:", e);
+                    alert("変更に失敗しました。エラー: " + e.message);
+                }
+            }
+        });
+    }
+});
 
 function generateRandomToken() {
     const now = new Date();
@@ -46,9 +113,6 @@ function updateTokenDisplay() {
 setInterval(updateTokenDisplay, 1000);
 updateTokenDisplay();
 
-// ==========================================
-// 📱 ログイン端末（セッション）の一覧表示と強制ログアウト
-// ==========================================
 async function loadActiveSessions() {
     const container = document.getElementById("device-list-container");
     if (!container) return;
@@ -98,7 +162,6 @@ async function loadActiveSessions() {
 
 loadActiveSessions();
 
-// 💡 Firestoreのセッション変更をリアルタイムで検知してリストを即座に再描画
 onSnapshot(collection(db, "staff_sessions"), () => {
     loadActiveSessions();
 });

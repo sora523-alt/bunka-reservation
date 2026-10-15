@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, getDocs, addDoc, updateDoc, doc, serverTimestamp, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, addDoc, updateDoc, doc, getDoc, serverTimestamp, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
@@ -13,6 +13,79 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+// 🔒 お客様用パスワード認証の確認とリアルタイム監視
+async function checkCustomerAuth() {
+    const overlay = document.getElementById("customer-auth-overlay");
+    const isAuthed = localStorage.getItem("customer_authenticated") === "true";
+
+    try {
+        const configDoc = await getDoc(doc(db, "settings", "app_config"));
+        const currentServerPass = configDoc.exists() ? (configDoc.data().customerPassword || "bunka2026") : "bunka2026";
+        const savedAuthedPass = localStorage.getItem("customer_authed_pass");
+
+        if (!isAuthed || savedAuthedPass !== currentServerPass) {
+            localStorage.removeItem("customer_authenticated");
+            localStorage.removeItem("customer_authed_pass");
+            if (overlay) overlay.style.display = "flex";
+            return false;
+        }
+    } catch (e) {
+        console.error(e);
+    }
+
+    if (overlay) overlay.style.display = "none";
+    return true;
+}
+
+// 💡 パスワードが変更されたら即座にログアウトさせるリアルタイム監視
+onSnapshot(doc(db, "settings", "app_config"), (docSnap) => {
+    if (docSnap.exists() && localStorage.getItem("customer_authenticated") === "true") {
+        const serverPass = docSnap.data().customerPassword || "bunka2026";
+        const savedPass = localStorage.getItem("customer_authed_pass");
+        if (serverPass !== savedPass) {
+            alert("パスワードが変更されたため、再認証が必要です。");
+            localStorage.removeItem("customer_authenticated");
+            localStorage.removeItem("customer_authed_pass");
+            location.reload();
+        }
+    }
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+    const submitBtn = document.getElementById("customer-submit-btn");
+    const tokenInput = document.getElementById("customer-token-input");
+    const errorMsg = document.getElementById("customer-error-msg");
+
+    if (submitBtn) {
+        submitBtn.addEventListener("click", async () => {
+            const inputVal = tokenInput.value.trim();
+            try {
+                const configDoc = await getDoc(doc(db, "settings", "app_config"));
+                const serverPass = configDoc.exists() ? (configDoc.data().customerPassword || "bunka2026") : "bunka2026";
+
+                if (inputVal === serverPass) {
+                    localStorage.setItem("customer_authenticated", "true");
+                    localStorage.setItem("customer_authed_pass", serverPass);
+                    document.getElementById("customer-auth-overlay").style.display = "none";
+                    loadShops();
+                } else {
+                    errorMsg.textContent = "❌ パスワードが違います。";
+                    errorMsg.style.display = "block";
+                }
+            } catch (e) {
+                errorMsg.textContent = "❌ 認証エラーが発生しました。";
+                errorMsg.style.display = "block";
+            }
+        });
+    }
+
+    if (tokenInput) {
+        tokenInput.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") submitBtn.click();
+        });
+    }
+});
 
 function getDeviceUuid() {
     let uuid = localStorage.getItem("device_uuid");
@@ -35,6 +108,9 @@ let userSelectedDates = {};
 let countdownInterval = null;
 
 async function loadShops() {
+    const isAuth = await checkCustomerAuth();
+    if (!isAuth) return;
+
     const container = document.getElementById("shop-container");
     if (!container) return;
     
@@ -123,8 +199,8 @@ async function loadShops() {
                 const data = docSnap.data();
                 const shopId = docSnap.id;
                 
-                const standardGroupSize = data.standardGroupSize || 4; // 基準人数
-                const minutesPerGroup = data.minutesPerGroup !== undefined ? data.minutesPerGroup : 10; // かかる時間
+                const standardGroupSize = data.standardGroupSize || 4;
+                const minutesPerGroup = data.minutesPerGroup !== undefined ? data.minutesPerGroup : 10;
                 const autoExpireMinutes = data.autoExpireMinutes !== undefined ? data.autoExpireMinutes : 1;
                 const isQueueStopped = data.isQueueStopped === true;
 
@@ -142,7 +218,6 @@ async function loadShops() {
                 const qWaiting = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "waiting"));
                 const queueSnapshot = await getDocs(qWaiting);
                 
-                // 全待機人数を計算
                 let totalWaitingPeople = 0;
                 queueSnapshot.forEach(wDoc => {
                     totalWaitingPeople += (wDoc.data().partySize || 1);
@@ -198,7 +273,6 @@ async function loadShops() {
                             </div>
                         `;
 
-                        // ⏱️ リアルタイムカウントダウン開始
                         if (ticketData.calledAt) {
                             const calledTimeMs = ticketData.calledAt.toDate ? ticketData.calledAt.toDate().getTime() : new Date(ticketData.calledAt).getTime();
                             const expireTimeMs = calledTimeMs + (autoExpireMinutes * 60 * 1000);
@@ -208,7 +282,6 @@ async function loadShops() {
                             countdownInterval = setInterval(async () => {
                                 const nowMs = Date.now();
                                 const remainMs = expireTimeMs - nowMs;
-
                                 const countEl = document.getElementById("countdown-display");
 
                                 if (remainMs <= 0) {
@@ -476,7 +549,11 @@ async function loadShops() {
     }
 }
 
-loadShops();
+checkCustomerAuth().then(authed => {
+    if (authed) {
+        loadShops();
+    }
+});
 
 function updateLastRefreshTime() {
     const now = new Date();
@@ -490,16 +567,22 @@ function updateLastRefreshTime() {
 updateLastRefreshTime();
 
 onSnapshot(collection(db, "shops"), () => {
-    loadShops();
+    checkCustomerAuth().then(authed => {
+        if (authed) loadShops();
+    });
     updateLastRefreshTime();
 });
 
 onSnapshot(collection(db, "queues"), () => {
-    loadShops();
+    checkCustomerAuth().then(authed => {
+        if (authed) loadShops();
+    });
     updateLastRefreshTime();
 });
 
 setInterval(() => {
-    loadShops();
+    checkCustomerAuth().then(authed => {
+        if (authed) loadShops();
+    });
     updateLastRefreshTime();
 }, 30000);
