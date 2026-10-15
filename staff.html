@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>【スタッフ用】文化祭 予約管理</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
+        .card { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .queue-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+        .queue-item:last-child { border-bottom: none; }
+        button { background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .nav-bar { margin-bottom: 10px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: space-between; align-items: center; }
+        .nav-left { display: flex; gap: 10px; flex-wrap: wrap; }
+        .refresh-info { font-size: 12px; color: #666; margin-bottom: 15px; }
+        
+        /* 🔒 認証モーダル用スタイル */
+        #auth-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.7); display: flex; justify-content: center; align-items: center; z-index: 9999;
+        }
+        .auth-box {
+            background: white; padding: 30px; border-radius: 12px; width: 90%; max-width: 400px; text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        .auth-box input { width: 100%; padding: 12px; font-size: 18px; text-align: center; margin: 15px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+        .auth-box button { width: 100%; padding: 12px; font-size: 16px; font-weight: bold; background: #28a745; }
+        .auth-box button:hover { background: #218838; }
+    </style>
+    <!-- QRコードスキャナーライブラリ (jsQR) -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+</head>
+<body>
+
+<!-- 🔒 スタッフ認証オーバーレイ（未認証時のみ表示） -->
+<div id="auth-overlay" style="display: none;">
+    <div class="auth-box">
+        <h2 style="color: #0056b3; margin-top: 0;">🔐 スタッフ認証</h2>
+        <p style="font-size: 14px; color: #555;">管理画面に入るためのトークン（パスコード）を入力してください。</p>
+        <input type="password" id="auth-token-input" placeholder="" autocomplete="off">
+        <button id="auth-submit-btn">認証してログイン</button>
+        <p id="auth-error-msg" style="color: red; font-size: 13px; margin-top: 10px; display: none;"></p>
+    </div>
+</div>
+
+<div class="nav-bar">
+    <div class="nav-left">
+        <a href="./staff.html"><button style="background: #007bff; font-weight: bold;">現在の管理・運営</button></a>
+        <a href="./settings.html"><button style="background: #17a2b8;">⚙️ 店舗設定画面へ</button></a>
+        <a href="./history.html"><button style="background: #6c757d;">📜 過去の履歴・リセット画面へ</button></a>
+    </div>
+    <div>
+        <!-- 🚪 ログアウトボタン -->
+        <button id="logout-btn" style="background: #dc3545; font-weight: bold;">🚪 ログアウト</button>
+    </div>
+</div>
+
+<h1>【スタッフ用】管理・運営画面</h1>
+<div id="last-updated" class="refresh-info">最終更新: --:--:--</div>
+
+<div id="staff-container">読み込み中...</div>
+
+<script type="module" src="staff.js">
+import { doc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+</script>
+<script type="module">
+    // 🚪 ログアウトボタンの処理
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    
+    const firebaseConfig = {
+      apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
+      authDomain: "reservation-system-5dcbd.firebaseapp.com",
+      projectId: "reservation-system-5dcbd",
+      storageBucket: "reservation-system-5dcbd.firebasestorage.app",
+      messagingSenderId: "601621223185",
+      appId: "1:601621223185:web:87cf014b94bf08...",
+      measurementId: "G-KL7VR03336"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    document.getElementById("logout-btn").addEventListener("click", async () => {
+        if (confirm("ログアウトしますか？")) {
+            const sid = localStorage.getItem("staff_session_uuid");
+            if (sid) {
+                try {
+                    await deleteDoc(doc(db, "staff_sessions", sid));
+                } catch (e) {
+                    console.error(e);
+                }
+            }
+            localStorage.removeItem("staff_authenticated");
+            location.reload();
+        }
+    });
+</script>
+</body>
+</html>

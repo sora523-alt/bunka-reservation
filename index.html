@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文化祭 予約システム</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f0f2f5; margin: 0; }
+        .container { max-width: 500px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; }
+        h2 { margin-top: 0; color: #00c300; }
+        button { width: 100%; background: #00c300; color: white; border: none; padding: 12px; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #00b300; }
+        .cancel-btn { background: #ff4d4d; }
+        .cancel-btn:hover { background: #e60000; }
+        .ticket-box { background: #e6f9e6; border: 2px dashed #00c300; padding: 15px; border-radius: 8px; margin-top: 15px; text-align: center; }
+        .slot-container { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+        .slot-btn { background: #f0f0f0; color: #333; border: 1px solid #ccc; padding: 8px 12px; border-radius: 4px; cursor: pointer; width: auto; font-size: 14px; }
+        .slot-btn.selected { background: #00c300; color: white; border-color: #00c300; }
+        .refresh-info { text-align: right; font-size: 12px; color: #666; margin-bottom: 10px; }
+    </style>
+    <!-- QRコード生成ライブラリ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <h1>文化祭 予約システム</h1>
+    <!-- 最終更新時間の表示エリア -->
+    <div id="last-updated" class="refresh-info">最終更新: --:--:--</div>
+    <div id="shop-container">読み込み中...</div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

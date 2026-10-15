@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>【スタッフ用】管理トークン＆セッション管理</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f0f2f5; max-width: 600px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); text-align: center; }
+        h1 { color: #0056b3; font-size: 20px; margin-top: 0; }
+        .token-display { font-size: 42px; font-weight: bold; color: #28a745; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 2px dashed #28a745; margin: 15px 0; letter-spacing: 4px; }
+        .timer { font-size: 16px; color: #dc3545; font-weight: bold; margin-bottom: 10px; }
+        .info { font-size: 13px; color: #666; }
+        button { background: #007bff; color: white; border: none; padding: 10px 16px; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .device-item { background: #fdfdfd; border: 1px solid #ddd; padding: 12px; border-radius: 6px; margin-bottom: 10px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
+        .danger-btn { background: #dc3545; padding: 6px 12px; font-size: 12px; }
+        .danger-btn:hover { background: #bd2130; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1>🔐 スタッフ管理トークン</h1>
+    <p class="info">管理画面のログインに必要な5分更新のパスコードです。</p>
+    
+    <div id="token-box" class="token-display">------</div>
+    <div id="countdown-timer" class="timer">次のコードまで: --:--</div>
+    
+    <a href="./staff.html"><button style="width: 100%; margin-top: 10px;">スタッフ管理画面へ移動</button></a>
+</div>
+
+<div class="card" style="text-align: left;">
+    <h1>📱 ログイン中端末の管理</h1>
+    <p class="info" style="margin-bottom: 15px;">現在アクセスしているスタッフ端末の状況です。不審な端末は強制ログアウトできます。</p>
+    <div id="device-list-container">読み込み中...</div>
+</div>
+
+<script type="module" src="token.js"></script>
+</body>
+</html>
