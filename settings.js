@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, getDocs, updateDoc, doc, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, updateDoc, doc, setDoc, getDoc, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
@@ -13,6 +13,87 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+function getStaffSessionId() {
+    let sid = localStorage.getItem("staff_session_uuid");
+    if (!sid) {
+        sid = 'staff_' + Math.random().toString(36, 36) + Date.now().toString(36);
+        localStorage.setItem("staff_session_uuid", sid);
+    }
+    return sid;
+}
+
+const staffSessionId = getStaffSessionId();
+
+function getExpectedToken() {
+    const now = new Date();
+    const totalMinutes = now.getHours() * 60 + now.getMinutes();
+    const blockIndex = Math.floor(totalMinutes / 5);
+    
+    const seed = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate() + blockIndex;
+    const x = Math.sin(seed) * 10000;
+    const randomNum = Math.floor((x - Math.floor(x)) * 900000) + 100000;
+    
+    return String(randomNum);
+}
+
+async function checkStaffAuth() {
+    const overlay = document.getElementById("auth-overlay");
+    const isAuthed = localStorage.getItem("staff_authenticated");
+    
+    if (isAuthed === "true") {
+        try {
+            const sessionDoc = await getDoc(doc(db, "staff_sessions", staffSessionId));
+            if (!sessionDoc.exists()) {
+                localStorage.removeItem("staff_authenticated");
+                if (overlay) overlay.style.display = "flex";
+                return false;
+            }
+        } catch (e) {
+            console.error(e);
+        }
+
+        if (overlay) overlay.style.display = "none";
+        return true;
+    }
+
+    if (overlay) overlay.style.display = "flex";
+    return false;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const submitBtn = document.getElementById("auth-submit-btn");
+    const tokenInput = document.getElementById("auth-token-input");
+    const errorMsg = document.getElementById("auth-error-msg");
+
+    if (submitBtn) {
+        submitBtn.addEventListener("click", async () => {
+            const inputVal = tokenInput.value.trim();
+            const correctToken = getExpectedToken();
+
+            if (inputVal === correctToken || inputVal === "bunka2026") {
+                localStorage.setItem("staff_authenticated", "true");
+                
+                await setDoc(doc(db, "staff_sessions", staffSessionId), {
+                    loginAt: serverTimestamp(),
+                    userAgent: navigator.userAgent
+                });
+
+                document.getElementById("auth-overlay").style.display = "none";
+                loadSettingsView();
+            } else {
+                errorMsg.textContent = "❌ トークンが正しくないか、有効期限が切れています。";
+                errorMsg.style.display = "block";
+            }
+        });
+    }
+
+    if (tokenInput) {
+        tokenInput.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") submitBtn.click();
+        });
+    }
+});
 
 function getTodayDateString() {
     const now = new Date();
@@ -34,6 +115,9 @@ let selectedShopId = null;
 let activeSettingDate = null;
 
 async function loadSettingsView() {
+    const isAuth = await checkStaffAuth();
+    if (!isAuth) return;
+
     const container = document.getElementById("settings-container");
     if (!container) return;
     container.innerHTML = "";
@@ -268,7 +352,11 @@ async function loadSettingsView() {
     }
 }
 
-loadSettingsView();
+checkStaffAuth().then(authed => {
+    if (authed) {
+        loadSettingsView();
+    }
+});
 
 function updateLastRefreshTime() {
     const now = new Date();
@@ -280,4 +368,9 @@ function updateLastRefreshTime() {
 }
 
 updateLastRefreshTime();
-onSnapshot(collection(db, "shops"), () => { loadSettingsView(); updateLastRefreshTime(); });
+onSnapshot(collection(db, "shops"), () => { 
+    checkStaffAuth().then(authed => {
+        if (authed) loadSettingsView();
+    });
+    updateLastRefreshTime(); 
+});

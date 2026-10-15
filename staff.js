@@ -264,7 +264,6 @@ async function loadStaffView(isBackground = false) {
                         <canvas id="qr-canvas" style="display: none;"></canvas>
                     </div>
                     
-                    <!-- 💡 スキャンされたお客様の情報を表示してボタンで確定するエリア -->
                     <div id="scan-result-area" style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #ddd; text-align: left;">
                         <p style="margin: 0; color: #888; text-align: center;">（QRコードをスキャンするとここに予約情報が表示されます）</p>
                     </div>
@@ -305,26 +304,36 @@ async function loadStaffView(isBackground = false) {
 
         if (currentTab === 'scanner' && !videoStream) startCamera();
 
+        // 🛑 順番待ちの一時停止・再開に確認ダイアログを追加
         const toggleQueueBtn = mainCard.querySelector("#toggle-queue-btn");
         if (toggleQueueBtn) {
             toggleQueueBtn.addEventListener("click", async () => {
                 const nextState = !isQueueStopped;
-                await updateDoc(doc(db, "shops", selectedShopId), { isQueueStopped: nextState });
-                loadStaffView(false);
+                const actionText = nextState ? "一時停止" : "再開";
+                if (confirm(`本当に順番待ちの受付を【${actionText}】しますか？`)) {
+                    await updateDoc(doc(db, "shops", selectedShopId), { isQueueStopped: nextState });
+                    loadStaffView(false);
+                }
             });
         }
 
+        // 📢 呼び出しボタンに確認ダイアログを追加
         mainCard.querySelectorAll(".call-btn").forEach(btn => {
             btn.addEventListener("click", async (e) => {
-                await updateDoc(doc(db, "queues", e.target.getAttribute("data-id")), { status: "called", calledAt: serverTimestamp() });
-                loadStaffView(false);
+                if (confirm("このお客様を呼び出しますか？")) {
+                    await updateDoc(doc(db, "queues", e.target.getAttribute("data-id")), { status: "called", calledAt: serverTimestamp() });
+                    loadStaffView(false);
+                }
             });
         });
 
+        // ✅ 完了ボタンに確認ダイアログを追加
         mainCard.querySelectorAll(".complete-btn").forEach(btn => {
             btn.addEventListener("click", async (e) => {
-                await updateDoc(doc(db, "queues", e.target.getAttribute("data-id")), { status: "completed", completedAt: serverTimestamp() });
-                loadStaffView(false);
+                if (confirm("この受付（予約）を完了にしますか？")) {
+                    await updateDoc(doc(db, "queues", e.target.getAttribute("data-id")), { status: "completed", completedAt: serverTimestamp() });
+                    loadStaffView(false);
+                }
             });
         });
 
@@ -379,7 +388,6 @@ function tick(video, canvas) {
     if (currentTab === 'scanner') scanAnimationId = requestAnimationFrame(() => tick(video, canvas));
 }
 
-// 💡 読み込んだ瞬間に完了させず、情報カードを表示してボタンで確定する処理
 async function handleScannedTicket(ticketId) {
     isProcessingScan = true;
     const resultArea = document.getElementById("scan-result-area");
@@ -412,7 +420,6 @@ async function handleScannedTicket(ticketId) {
             return;
         }
 
-        // 💡 情報表示と「受付を完了する」ボタンの配置
         resultArea.innerHTML = `
             <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 12px; border-radius: 6px;">
                 <p style="margin: 0 0 8px 0; font-weight: bold; color: #0d47a1;">👤 読み取ったお客様の予約情報</p>
@@ -429,20 +436,22 @@ async function handleScannedTicket(ticketId) {
 
         const confirmBtn = resultArea.querySelector("#confirm-scan-complete-btn");
         confirmBtn.addEventListener("click", async () => {
-            confirmBtn.disabled = true;
-            confirmBtn.innerText = "処理中...";
-            
-            await updateDoc(docRef, { 
-                status: "completed", 
-                completedAt: serverTimestamp() 
-            });
+            if (confirm("このお客様の受付を完了にしますか？")) {
+                confirmBtn.disabled = true;
+                confirmBtn.innerText = "処理中...";
+                
+                await updateDoc(docRef, { 
+                    status: "completed", 
+                    completedAt: serverTimestamp() 
+                });
 
-            resultArea.innerHTML = `
-                <div style="background: #e8f5e9; border: 1px solid #c8e6c9; padding: 12px; border-radius: 6px; text-align: center;">
-                    <p style="margin: 0; color: #2e7d32; font-weight: bold; font-size: 16px;">✅ 受付が完了しました！</p>
-                    <p style="margin: 4px 0 0 0; font-size: 12px; color: #555;">ID: ${idShort} (${partySize}人)</p>
-                </div>
-            `;
+                resultArea.innerHTML = `
+                    <div style="background: #e8f5e9; border: 1px solid #c8e6c9; padding: 12px; border-radius: 6px; text-align: center;">
+                        <p style="margin: 0; color: #2e7d32; font-weight: bold; font-size: 16px;">✅ 受付が完了しました！</p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #555;">ID: ${idShort} (${partySize}人)</p>
+                    </div>
+                `;
+            }
             isProcessingScan = false;
         });
 
