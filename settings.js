@@ -150,9 +150,9 @@ async function loadSettingsView() {
             activeSettingDate = availableDates.includes(todayStr) ? todayStr : availableDates[0];
         }
 
-        const autoExpireMinutes = shopData.autoExpireMinutes !== undefined ? shopData.autoExpireMinutes : 1; // 呼び出し後（当日用）
-        const timeslotExpireMinutes = shopData.timeslotExpireMinutes !== undefined ? shopData.timeslotExpireMinutes : 10; // 時間予約の終了後
-        const closeBeforeMinutes = shopData.closeBeforeMinutes !== undefined ? shopData.closeBeforeMinutes : 0; // 開始何分前に非表示・締め切り
+        const autoExpireMinutes = shopData.autoExpireMinutes !== undefined ? shopData.autoExpireMinutes : 1; 
+        const timeslotExpireMinutes = shopData.timeslotExpireMinutes !== undefined ? shopData.timeslotExpireMinutes : 10; 
+        const closeBeforeMinutes = shopData.closeBeforeMinutes !== undefined ? shopData.closeBeforeMinutes : 0; 
         const minutesPerGroup = shopData.minutesPerGroup !== undefined ? shopData.minutesPerGroup : 10;
         const standardGroupSize = shopData.standardGroupSize !== undefined ? shopData.standardGroupSize : 4;
 
@@ -274,6 +274,72 @@ async function loadSettingsView() {
                 loadSettingsView();
             });
         });
+
+        // 🗑️ 【追加】選択中の日付を削除するボタンのイベント処理
+        const deleteActiveDateBtn = mainCard.querySelector("#delete-active-date-btn");
+        if (deleteActiveDateBtn) {
+            deleteActiveDateBtn.addEventListener("click", async () => {
+                if (availableDates.length <= 1) {
+                    alert("最低1つの日付が必要なため削除できません。");
+                    return;
+                }
+
+                if (confirm(`本当に「${activeSettingDate}」の設定を削除しますか？`)) {
+                    // 該当の日付をマップから削除
+                    delete dateSlotsMap[activeSettingDate];
+                    
+                    // 残った日付の中から最初の日付を次のアクティブ日付に設定
+                    const remainingDates = Object.keys(dateSlotsMap);
+                    activeSettingDate = remainingDates[0];
+
+                    try {
+                        await updateDoc(doc(db, "shops", selectedShopId), {
+                            dateSlots: dateSlotsMap,
+                            timeSlots: dateSlotsMap[todayStr] || dateSlotsMap[activeSettingDate] || {}
+                        });
+                        alert(`「${activeSettingDate}」を削除しました。`);
+                        loadSettingsView();
+                    } catch (err) {
+                        console.error(err);
+                        alert("日付の削除に失敗しました。");
+                    }
+                }
+            });
+        }
+
+        // 📅 新しい日付を追加する処理
+        const addDateBtn = mainCard.querySelector("#add-date-btn");
+        if (addDateBtn) {
+            addDateBtn.addEventListener("click", async () => {
+                const inputVal = mainCard.querySelector("#new-date-input").value.trim();
+                const formattedDate = formatAutoDate(inputVal);
+
+                if (!formattedDate) {
+                    alert("有効な日付を入力してください（例: 20261016 または 2026年10月16日）。");
+                    return;
+                }
+
+                if (dateSlotsMap[formattedDate]) {
+                    alert("すでに登録されている日付です。");
+                    return;
+                }
+
+                // 新しい日付の枠を追加（初期値として空または既存の枠をコピー）
+                dateSlotsMap[formattedDate] = { "10:00-10:30": 5, "11:00-11:30": 5 };
+                activeSettingDate = formattedDate;
+
+                try {
+                    await updateDoc(doc(db, "shops", selectedShopId), {
+                        dateSlots: dateSlotsMap
+                    });
+                    alert(`新しい日付「${formattedDate}」を追加しました！`);
+                    loadSettingsView();
+                } catch (e) {
+                    console.error(e);
+                    alert("日付の追加に失敗しました。");
+                }
+            });
+        }
 
         const generateBtn = mainCard.querySelector("#generate-slots-btn");
         if (generateBtn) {

@@ -218,7 +218,8 @@ async function loadStaffView(isBackground = false) {
 
         for (const docSnap of reservedSnap.docs) {
             const qData = docSnap.data();
-            if (qData.type === "timeslot" && qData.timeSlot && qData.timeSlot.includes("-")) {
+            // 💡 修正：今日の日付の予約チケットである場合のみ、時間切れによる自動キャンセルを行う
+            if (qData.type === "timeslot" && qData.timeSlot && qData.date === todayStr && qData.timeSlot.includes("-")) {
                 const endTimePart = qData.timeSlot.split("-")[1].trim();
                 const [endH, endM] = endTimePart.split(":").map(Number);
                 const slotEndDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), endH, endM, 0);
@@ -267,7 +268,7 @@ async function loadStaffView(isBackground = false) {
             filteredWaitingDocs.forEach((qData, index) => {
                 const qId = qData.id;
                 const partySize = qData.partySize || 1;
-                const partySizeText = ` (${partySize}名)`;
+                const partySizeText = ` (${partySize}人)`;
                 const createdTimeStr = formatTimestamp(qData.createdAt);
                 const isCalled = qData.status === "called";
                 const isManualStaff = qData.isStaffIssued === true;
@@ -325,6 +326,11 @@ async function loadStaffView(isBackground = false) {
             });
             if (waitingListHtml === "") waitingListHtml = "<p>該当する待ちのお客様はいません。</p>";
 
+            let manualPartySizeOptionsHtml = "";
+            for (let i = 1; i <= 5; i++) {
+                manualPartySizeOptionsHtml += `<option value="${i}" ${i === 2 ? 'selected' : ''}>${i}人</option>`;
+            }
+
             tabContentHtml = `
                 <div style="background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ccc;">
                     <div style="margin-bottom: 15px; display: flex; gap: 8px;">
@@ -338,11 +344,7 @@ async function loadStaffView(isBackground = false) {
                             <div>
                                 <label style="font-size: 13px; font-weight: bold;">人数:</label>
                                 <select id="manual-party-size" style="padding: 6px; margin-left: 5px;">
-                                    <option value="1">1名</option>
-                                    <option value="2" selected>2名</option>
-                                    <option value="3">3名</option>
-                                    <option value="4">4名</option>
-                                    <option value="5">5名以上</option>
+                                    ${manualPartySizeOptionsHtml}
                                 </select>
                             </div>
                             <button id="manual-issue-btn" style="background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; font-weight: bold; cursor: pointer;">＋ 手動で順番待ちを発行する</button>
@@ -371,7 +373,7 @@ async function loadStaffView(isBackground = false) {
             
             filteredReservedDocs.forEach((qData) => {
                 const qId = qData.id;
-                const partySizeText = qData.partySize ? ` (${qData.partySize}名)` : " (1名)";
+                const partySizeText = qData.partySize ? ` (${qData.partySize}人)` : " (1人)";
                 const createdTimeStr = formatTimestamp(qData.createdAt);
                 
                 let expireWarningHtml = "";
@@ -721,7 +723,7 @@ async function handleFreshScannedTicket(ticketId) {
                 <div style="background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin: 15px 0; text-align: left;">
                     <p style="margin: 4px 0; font-size: 16px;">予約ID: <strong>${idShort}</strong></p>
                     <p style="margin: 4px 0; font-size: 16px;">種類: <strong>${typeText}</strong></p>
-                    <p style="margin: 4px 0; font-size: 16px;">人数: <strong>${partySize} 名</strong></p>
+                    <p style="margin: 4px 0; font-size: 16px;">人数: <strong>${partySize} 人</strong></p>
                 </div>
                 <button id="fresh-modal-close" style="background: #007bff; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 10px;">確認（閉じる）</button>
             `;
@@ -739,7 +741,7 @@ async function handleFreshScannedTicket(ticketId) {
             <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 18px; border-radius: 8px; margin: 15px 0; text-align: left;">
                 <p style="margin: 6px 0; font-size: 18px;">受付ID: <strong style="color: #d9534f; font-size: 22px;">${idShort}</strong></p>
                 <p style="margin: 6px 0; font-size: 18px;">種類: <strong>${typeText}</strong></p>
-                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 名</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 人</strong></p>
                 <p style="margin: 6px 0; font-size: 18px;">現在の状態: <strong>${statusText}</strong></p>
             </div>
             
@@ -755,7 +757,7 @@ async function handleFreshScannedTicket(ticketId) {
         modalOverlay.style.display = "flex";
 
         document.getElementById("fresh-accept-btn").onclick = async () => {
-            if (confirm(`【確認】本当にこのお客様（ID: ${idShort} / ${partySize}名）の受付を完了にしますか？`)) {
+            if (confirm(`【確認】本当にこのお客様（ID: ${idShort} / ${partySize}人）の受付を完了にしますか？`)) {
                 const acceptBtn = document.getElementById("fresh-accept-btn");
                 acceptBtn.disabled = true;
                 acceptBtn.innerText = "処理中...";
@@ -768,7 +770,7 @@ async function handleFreshScannedTicket(ticketId) {
 
                     modalContent.innerHTML = `
                         <h2 style="color: #2e7d32; margin-top: 0;">🎉 受付完了しました！</h2>
-                        <p style="font-size: 18px; margin: 10px 0;">ID: <strong>${idShort}</strong> (${partySize}名)</p>
+                        <p style="font-size: 18px; margin: 10px 0;">ID: <strong>${idShort}</strong> (${partySize}人)</p>
                         <p style="color: #666; font-size: 14px;">正常に来場・受付処理が完了しました。</p>
                         <button id="fresh-success-ok" style="background: #28a745; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">OK（次へ進む）</button>
                     `;
@@ -873,10 +875,10 @@ async function handleManualIssuedTicket(ticketId) {
             <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 18px; border-radius: 8px; margin: 15px 0; text-align: left;">
                 <p style="margin: 6px 0; font-size: 18px;">受付ID: <strong style="color: #d9534f; font-size: 22px;">${idShort}</strong></p>
                 <p style="margin: 6px 0; font-size: 18px;">種類: <strong>紙の整理券（手動発券）</strong></p>
-                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 名</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 人</strong></p>
                 
                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #90caf9; font-size: 16px; color: #0d47a1;">
-                    前のお待ち人数: <strong>${aheadPeople} 名</strong><br>
+                    前のお待ち人数: <strong>${aheadPeople} 人</strong><br>
                     およその待ち時間: <strong>約 ${estimatedMinutes} 分</strong>
                 </div>
             </div>
@@ -911,7 +913,7 @@ async function handleManualIssuedTicket(ticketId) {
                 }
             }
             modalOverlay.style.display = "none";
-            isProcessingFreshScan = false;
+            isProcessingFreshScan =したか確認 = false;
             loadStaffView(false);
         };
 

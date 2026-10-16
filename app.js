@@ -299,11 +299,20 @@ async function loadShops() {
                         slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
                         const expireTimeStr = `${String(slotEndDatetime.getHours()).padStart(2, '0')}:${String(slotEndDatetime.getMinutes()).padStart(2, '0')}`;
 
-                        waitInfoHtml = `
-                            <p style="margin: 8px 0; font-size: 14px; color: #d9534f; font-weight: bold;">
-                                ⚠️ ${expireTimeStr}を過ぎると自動キャンセルされますのでご注意ください
-                            </p>
-                        `;
+                        // 💡 修正：今日の日付の予約チケットである場合のみ、有効期限チェックの文言を表示
+                        if (ticketData.date === todayStr) {
+                            waitInfoHtml = `
+                                <p style="margin: 8px 0; font-size: 14px; color: #d9534f; font-weight: bold;">
+                                    ⚠️ ${expireTimeStr}を過ぎると自動キャンセルされますのでご注意ください
+                                </p>
+                            `;
+                        } else {
+                            waitInfoHtml = `
+                                <p style="margin: 8px 0; font-size: 14px; color: #008000; font-weight: bold;">
+                                    📅 ${ticketData.date} のご予約です
+                                </p>
+                            `;
+                        }
                     }
 
                     let cancelOptionsHtml = `<option value="all">全員キャンセル (${currentSize}人分)</option>`;
@@ -343,18 +352,29 @@ async function loadShops() {
 
                 let slotButtonsHtml = "";
                 const nowTime = new Date();
-                const isTodayActive = (activeDate === todayStr);
 
-                for (const [time, limit] of Object.entries(timeSlots)) {
-                    if (isTodayActive && time.includes("-")) {
-                        const startTimePart = time.split("-")[0].trim();
-                        const [startH, startM] = startTimePart.split(":").map(Number);
-                        const slotStartDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), startH, startM, 0);
-                        slotStartDatetime.setMinutes(slotStartDatetime.getMinutes() - closeBeforeMinutes);
+                const sortedTimeSlots = Object.entries(timeSlots).sort((a, b) => {
+                    const timeA = a[0].split("-")[0].trim();
+                    const timeB = b[0].split("-")[0].trim();
+                    return timeA.localeCompare(timeB);
+                });
 
-                        if (nowTime >= slotStartDatetime) {
-                            continue;
+                for (const [time, limit] of sortedTimeSlots) {
+                    let isExpiredOrPassed = false;
+
+                    // 💡 修正：選択している日付が「今日」の場合のみ、過去の時間枠を非活性化する
+                    if (activeDate === todayStr && time.includes("-")) {
+                        const endTimePart = time.split("-")[1].trim();
+                        const [endH, endM] = endTimePart.split(":").map(Number);
+                        const slotEndDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), endH, endM, 0);
+                        slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
+
+                        if (nowTime > slotEndDatetime) {
+                            isExpiredOrPassed = true;
                         }
+                    } else if (activeDate < todayStr) {
+                        // 過去の日付なら選択不可
+                        isExpiredOrPassed = true;
                     }
 
                     let slotConsumedCount = 0;
@@ -366,11 +386,18 @@ async function loadShops() {
                     });
 
                     const remainingSlotSeats = limit - slotConsumedCount;
-                    const isFull = remainingSlotSeats <= 0;
+                    const isFull = remainingSlotSeats <= 0 || isExpiredOrPassed;
+
+                    let buttonLabel = `<strong>${time}</strong><br><span style="font-size:11px;">(残り${remainingSlotSeats}人)</span>`;
+                    if (isExpiredOrPassed && activeDate === todayStr) {
+                        buttonLabel = `<strong>${time}</strong><br><span style="font-size:11px; color:#d9534f;">受付終了</span>`;
+                    } else if (activeDate < todayStr) {
+                        buttonLabel = `<strong>${time}</strong><br><span style="font-size:11px; color:#d9534f;">終了</span>`;
+                    }
 
                     slotButtonsHtml += `
                         <button class="slot-btn" data-time="${time}" ${isFull ? 'disabled' : ''} style="background:${isFull ? '#ddd' : '#f0f0f0'}; color:${isFull ? '#888' : '#333'}; cursor:${isFull ? 'not-allowed' : 'pointer'}; padding:8px 12px; border:1px solid #ccc; border-radius:4px; min-width: 110px; text-align: center;">
-                            <strong>${time}</strong><br><span style="font-size:11px;">(残り${remainingSlotSeats}人)</span>
+                            ${buttonLabel}
                         </button>
                     `;
                 }
@@ -382,13 +409,18 @@ async function loadShops() {
                 });
                 dateTabsHtml += `</div>`;
 
+                let partySizeOptionsHtml = "";
+                for (let i = 1; i <= 5; i++) {
+                    partySizeOptionsHtml += `<option value="${i}" ${i === 2 ? 'selected' : ''}>${i}人</option>`;
+                }
+
                 let queueActionHtml = isQueueStopped ? 
                     `<div style="background: #ffebee; color: #c62828; padding: 12px; border-radius: 6px; font-weight: bold; text-align: center; margin-top: 10px;">🚫 現在、順番待ちの受付を停止しています</div>` : 
                     `
                     <div style="margin-bottom: 10px;">
                         <label>順番待ちの人数: </label>
                         <select id="queue-size-${shopId}" style="padding: 6px;">
-                            <option value="1">1人</option><option value="2" selected>2人</option><option value="3">3人</option><option value="4">4人</option><option value="5">5人以上</option>
+                            ${partySizeOptionsHtml}
                         </select>
                     </div>
                     <button id="queue-btn-${shopId}" style="background: #00c300; color:white; border:none; padding:12px; border-radius:6px; font-weight:bold; width:100%; cursor:pointer;">順番待ちを発行する</button>
@@ -410,6 +442,12 @@ async function loadShops() {
 
                     <div class="slot-container" id="slots-${shopId}" style="display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0;">
                         ${slotButtonsHtml || '<p style="font-size:13px; color:#666;">現在受付中の時間枠はありません。</p>'}
+                    </div>
+                    <div style="margin-top: 10px; margin-bottom: 8px;" id="timeslot-size-area-${shopId}">
+                        <label style="font-size: 13px; font-weight: bold;">予約人数: </label>
+                        <select id="timeslot-party-size-${shopId}" style="padding: 6px;">
+                            ${partySizeOptionsHtml}
+                        </select>
                     </div>
                     <button id="time-btn-${shopId}" style="background: #6c757d; color:white; border:none; padding:10px; border-radius:5px; width:100%; cursor:pointer;" disabled>時間枠を選んで予約 (${activeDate})</button>
                 `;
@@ -517,7 +555,9 @@ async function loadShops() {
 
                 timeBtn.addEventListener("click", async () => {
                     if (!selectedTime || isAlreadyBooked) return;
-                    const partySize = 2; 
+                    
+                    const partySizeSelectEl = card.querySelector(`#timeslot-party-size-${shopId}`);
+                    const partySize = partySizeSelectEl ? parseInt(partySizeSelectEl.value) || 1 : 1;
 
                     const currentLimit = timeSlots[selectedTime] || 0;
                     const sQueryR = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "reserved"));
@@ -533,7 +573,8 @@ async function loadShops() {
                     });
                     
                     if (currentSlotConsumed + partySize > currentLimit) {
-                        alert("申し訳ありません！選択された人数分の空きがありません。");
+                        const remaining = Math.max(0, currentLimit - currentSlotConsumed);
+                        alert(`申し訳ありません！選択された時間枠の残り人数は ${remaining} 人のため、${partySize} 人での予約はできません。`);
                         loadShops();
                         return;
                     }
@@ -549,7 +590,7 @@ async function loadShops() {
                         type: "timeslot",
                         createdAt: serverTimestamp()
                     });
-                    alert(`${activeDate} ${selectedTime} の時間予約が完了しました！`);
+                    alert(`${activeDate} ${selectedTime} の時間予約が完了しました！（${partySize}人）`);
                     loadShops();
                 });
             }
