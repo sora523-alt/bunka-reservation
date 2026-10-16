@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, getDocs, updateDoc, doc, setDoc, deleteDoc, getDoc, serverTimestamp, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, updateDoc, doc, setDoc, deleteDoc, getDoc, serverTimestamp, query, where, onSnapshot, addDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
@@ -101,6 +101,17 @@ document.addEventListener("DOMContentLoaded", () => {
             if (e.key === "Enter") submitBtn.click();
         });
     }
+
+    if (!document.getElementById("staff-modal-overlay")) {
+        const modalOverlay = document.createElement("div");
+        modalOverlay.id = "staff-modal-overlay";
+        modalOverlay.style.cssText = "position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 10000; padding: 20px; box-sizing: border-box;";
+        modalOverlay.innerHTML = `
+            <div id="staff-modal-content" style="background: white; padding: 30px; border-radius: 12px; width: 100%; max-width: 500px; text-align: center; box-shadow: 0 5px 20px rgba(0,0,0,0.3);">
+            </div>
+        `;
+        document.body.appendChild(modalOverlay);
+    }
 });
 
 function getTodayDateString() {
@@ -120,9 +131,10 @@ function formatTimestamp(ts) {
 
 let currentTab = 'waiting';
 let selectedShopId = null;
-let videoStream = null;
-let scanAnimationId = null;
+let html5QrCode = null;
 let isInitialLoaded = false;
+let countdownTimerInterval = null;
+let searchQuery = ""; // 🔍 検索クエリ保持用
 
 async function loadStaffView(isBackground = false) {
     const isAuth = await checkStaffAuth();
@@ -131,14 +143,14 @@ async function loadStaffView(isBackground = false) {
     const container = document.getElementById("staff-container");
     if (!container) return;
 
-    if (currentTab !== 'scanner' && videoStream) stopCamera();
+    if (currentTab !== 'scanner' && html5QrCode) stopCamera();
 
     const todayStr = getTodayDateString();
 
     if (!isInitialLoaded || !document.getElementById("staff-shops-list")) {
         container.innerHTML = `
             <div style="background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 20px; text-align: center; font-weight: bold; color: #0d47a1;">
-                📅 本日の管理日付: ${todayStr} （カメラQRスキャン対応）
+                📅 本日の管理日付: ${todayStr}
             </div>
             <div id="staff-shops-list">読み込み中...</div>
         `;
@@ -173,43 +185,131 @@ async function loadStaffView(isBackground = false) {
         shopsSnapshot.docs.forEach(d => { if (d.id === selectedShopId) shopData = d.data(); });
 
         const isQueueStopped = shopData.isQueueStopped === true;
+        const standardGroupSize = shopData.standardGroupSize !== undefined ? shopData.standardGroupSize : 4;
+        const minutesPerGroup = shopData.minutesPerGroup !== undefined ? shopData.minutesPerGroup : 10;
+        const autoExpireMinutes = shopData.autoExpireMinutes !== undefined ? shopData.autoExpireMinutes : 1;
+        const timeslotExpireMinutes = shopData.timeslotExpireMinutes !== undefined ? shopData.timeslotExpireMinutes : 10;
 
         const qWaiting = query(collection(db, "queues"), where("shopId", "==", selectedShopId), where("status", "in", ["waiting", "called"]));
         const qReserved = query(collection(db, "queues"), where("shopId", "==", selectedShopId), where("status", "==", "reserved"));
 
         const [waitingSnap, reservedSnap] = await Promise.all([getDocs(qWaiting), getDocs(qReserved)]);
 
+        const waitingDocs = [];
+        waitingSnap.forEach(doc => waitingDocs.push({ id: doc.id, ...doc.data() }));
+        waitingDocs.sort((a, b) => {
+            const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+            const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+            return timeA - timeB;
+        });
+
+        const reservedDocs = [];
+        reservedSnap.forEach(doc => reservedDocs.push({ id: doc.id, ...doc.data() }));
+        reservedDocs.sort((a, b) => {
+            const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+            const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+            return timeA - timeB;
+        });
+
+        // 🔍 検索フィルター適用関数（部分一致・大文字小文字無視）
+        const filterBySearch = (docs) => {
+            if (!searchQuery.trim()) return docs;
+            const q = searchQuery.trim().toLowerCase();
+            return docs.filter(item => item.id.toLowerCase().includes(q));
+        };
+
         let tabContentHtml = "";
 
         if (currentTab === 'waiting') {
+            const filteredWaitingDocs = filterBySearch(waitingDocs);
             let waitingListHtml = "";
-            waitingSnap.forEach((qDoc) => {
-                const qData = qDoc.data();
-                const qId = qDoc.id;
-                const partySizeText = qData.partySize ? ` (${qData.partySize}人)` : " (1人)";
+            let accumulatedPeopleBefore = 0;
+
+            waitingDocs.forEach((qData) => {
+                if (!qData.status || qData.status === "waiting") {
+                    accumulatedPeopleBefore += (qData.partySize || 1);
+                }
+            });
+
+            filteredWaitingDocs.forEach((qData, index) => {
+                const qId = qData.id;
+                const partySize = qData.partySize || 1;
+                const partySizeText = ` (${partySize}人)`;
                 const createdTimeStr = formatTimestamp(qData.createdAt);
                 const isCalled = qData.status === "called";
+                const isManualStaff = qData.isStaffIssued === true;
+
+                const slotIndex = Math.floor(index / standardGroupSize);
+                const estimatedMinutes = slotIndex * minutesPerGroup;
+
+                let waitTimeBadge = "";
+                if (isCalled) {
+                    const calledTime = qData.calledAt && typeof qData.calledAt.toMillis === 'function' ? qData.calledAt.toMillis() : (qData.calledAt ? new Date(qData.calledAt).getTime() : Date.now());
+                    const expireMs = autoExpireMinutes * 60 * 1000;
+                    const deadline = calledTime + expireMs;
+                    const remainingMs = deadline - Date.now();
+                    const remainingSec = Math.max(0, Math.floor(remainingMs / 1000));
+                    const remMin = Math.floor(remainingSec / 60);
+                    const remSec = remainingSec % 60;
+
+                    waitTimeBadge = `<span style="background: #ffc107; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-left: 8px;" class="countdown-badge" data-deadline="${deadline}">📢 呼び出し中 (自動キャンセルまで: ${remMin}分${String(remSec).padStart(2, '0')}秒)</span>`;
+                } else {
+                    waitTimeBadge = `<span style="background: #e9ecef; color: #495057; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-left: 8px;">⏳ 予想待ち時間: 約 ${estimatedMinutes} 分</span>`;
+                }
+
+                let badgeHtml = "";
+                if (isManualStaff) {
+                    badgeHtml = `<span class="status-badge" style="background:#6c757d; color:#fff; padding: 4px 8px; border-radius: 4px; font-weight: bold;">🎫 紙の整理券（スタッフ発行）</span>`;
+                } else if (isCalled) {
+                    badgeHtml = `<span class="status-badge" style="background:#ffc107; color:#000; padding: 4px 8px; border-radius: 4px; font-weight: bold;">📢 お呼び出し中</span>`;
+                } else {
+                    badgeHtml = `<span class="status-badge" style="background:#28a745; color:#fff; padding: 4px 8px; border-radius: 4px; font-weight: bold;">順番待ち #${index + 1}</span>`;
+                }
 
                 waitingListHtml += `
-                    <div class="queue-item" style="display: flex; justify-content: space-between; align-items: center; background: ${isCalled ? '#fff9e6' : '#fff'}; padding: 12px; margin-bottom: 8px; border-radius: 6px; border: 1px solid ${isCalled ? '#ffe082' : '#ddd'};">
+                    <div class="queue-item" style="display: flex; justify-content: space-between; align-items: center; background: ${isManualStaff ? '#f8f9fa' : (isCalled ? '#fff9e6' : '#fff')}; padding: 12px; margin-bottom: 8px; border-radius: 6px; border: 1px solid ${isManualStaff ? '#ccc' : (isCalled ? '#ffe082' : '#ddd')};">
                         <div>
-                            <span class="status-badge" style="background:${isCalled ? '#ffc107' : '#28a745'}; color:${isCalled ? '#000' : '#fff'}; padding: 4px 8px; border-radius: 4px; font-weight: bold;">
-                                ${isCalled ? '📢 お呼び出し中' : '順番待ち'}
-                            </span>
-                            受付ID: <strong>${qId.slice(-4).toUpperCase()}</strong>${partySizeText}<br>
-                            <span style="font-size: 12px; color: #666;">予約時刻: ${createdTimeStr}</span>
+                            <div style="margin-bottom: 4px;">
+                                ${badgeHtml}
+                                ${waitTimeBadge}
+                            </div>
+                            受付ID: <strong>${qId.slice(-4).toUpperCase()}</strong>${partySizeText} <span style="font-size: 11px; color: #888;">(${qId})</span><br>
+                            <span style="font-size: 12px; color: #666;">受付時刻: ${createdTimeStr}</span>
                         </div>
                         <div style="display: flex; gap: 6px;">
-                            ${!isCalled ? `<button data-id="${qId}" class="call-btn" style="background: #ffc107; color: #333; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-weight: bold;">📢 呼び出す</button>` : ''}
+                            ${(!isCalled && !isManualStaff) ? `<button data-id="${qId}" class="call-btn" style="background: #ffc107; color: #333; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-weight: bold;">📢 呼び出す</button>` : ''}
                             <button data-id="${qId}" class="complete-btn" style="background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-weight: bold;">✅ 完了にする</button>
                         </div>
                     </div>
                 `;
             });
-            if (waitingListHtml === "") waitingListHtml = "<p>現在待ちのお客様はいません。</p>";
+            if (waitingListHtml === "") waitingListHtml = "<p>該当する待ちのお客様はいません。</p>";
 
             tabContentHtml = `
                 <div style="background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ccc;">
+                    <!-- 🔍 検索バー -->
+                    <div style="margin-bottom: 15px; display: flex; gap: 8px;">
+                        <input type="text" id="staff-search-input" placeholder="🔍 ID（例: ABCD または下4桁）で検索" value="${searchQuery}" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;">
+                        <button id="staff-search-clear" style="padding: 10px 15px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">クリア</button>
+                    </div>
+
+                    <div style="background: #e2f0fb; border: 1px solid #bce8f1; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                        <h4 style="margin-top: 0; color: #004085;">🎫 スマホがないお客様用の手動発券（紙にIDを書いてお渡しください）</h4>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <div>
+                                <label style="font-size: 13px; font-weight: bold;">人数:</label>
+                                <select id="manual-party-size" style="padding: 6px; margin-left: 5px;">
+                                    <option value="1">1人</option>
+                                    <option value="2" selected>2人</option>
+                                    <option value="3">3人</option>
+                                    <option value="4">4人</option>
+                                    <option value="5">5人以上</option>
+                                </select>
+                            </div>
+                            <button id="manual-issue-btn" style="background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; font-weight: bold; cursor: pointer;">＋ 手動で順番待ちを発行する</button>
+                        </div>
+                    </div>
+
                     <div style="background: ${isQueueStopped ? '#ffebee' : '#e8f5e9'}; padding: 12px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
                         <div>
                             <strong>受付状態:</strong> 
@@ -221,34 +321,55 @@ async function loadStaffView(isBackground = false) {
                             ${isQueueStopped ? '順番待ちを再開する' : '順番待ちを一時停止する'}
                         </button>
                     </div>
-                    <h3>📋 当日順番待ちリスト (全 ${waitingSnap.size} 件)</h3>
+                    <h3>📋 当日順番待ちリスト (全 ${filteredWaitingDocs.length} / ${waitingDocs.length} 件)</h3>
                     <div style="margin-top: 10px;">${waitingListHtml}</div>
                 </div>
             `;
         } 
         else if (currentTab === 'timeslot') {
+            const filteredReservedDocs = filterBySearch(reservedDocs);
             let reservedListHtml = "";
-            reservedSnap.forEach((qDoc) => {
-                const qData = qDoc.data();
-                const qId = qDoc.id;
+            
+            filteredReservedDocs.forEach((qData) => {
+                const qId = qData.id;
                 const partySizeText = qData.partySize ? ` (${qData.partySize}人)` : " (1人)";
                 const createdTimeStr = formatTimestamp(qData.createdAt);
+                
+                let expireWarningHtml = "";
+                if (qData.timeSlot && qData.timeSlot.includes("-")) {
+                    const endTimePart = qData.timeSlot.split("-")[1].trim();
+                    const [endH, endM] = endTimePart.split(":").map(Number);
+                    const now = new Date();
+                    const slotEndDatetime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), endH, endM, 0);
+                    slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
+                    
+                    const expireTimeStr = `${String(slotEndDatetime.getHours()).padStart(2, '0')}:${String(slotEndDatetime.getMinutes()).padStart(2, '0')}`;
+                    expireWarningHtml = `<br><span style="font-size: 11px; color: #d9534f; font-weight: bold;">⚠️ 終了時刻(${endTimePart})から ${timeslotExpireMinutes}分過ぎた ${expireTimeStr} を過ぎると自動キャンセルされます</span>`;
+                }
+
                 reservedListHtml += `
                     <div class="queue-item" style="display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 12px; margin-bottom: 8px; border-radius: 6px; border: 1px solid #ddd;">
                         <div>
                             <span class="status-badge" style="background:#17a2b8; color:white; padding: 4px 8px; border-radius: 4px; font-weight: bold;">${qData.date || ''} ${qData.timeSlot}</span>
-                            予約ID: <strong>${qId.slice(-4).toUpperCase()}</strong>${partySizeText}<br>
+                            予約ID: <strong>${qId.slice(-4).toUpperCase()}</strong>${partySizeText} <span style="font-size: 11px; color: #888;">(${qId})</span>
+                            ${expireWarningHtml}<br>
                             <span style="font-size: 12px; color: #666;">予約時刻: ${createdTimeStr}</span>
                         </div>
                         <button data-id="${qId}" class="complete-btn" style="background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-weight: bold;">✅ 完了にする</button>
                     </div>
                 `;
             });
-            if (reservedListHtml === "") reservedListHtml = "<p>現在有効な時間予約はありません。</p>";
+            if (reservedListHtml === "") reservedListHtml = "<p>該当する時間予約はありません。</p>";
 
             tabContentHtml = `
                 <div style="background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ccc;">
-                    <h3>⏰ 時間予約リスト (全 ${reservedSnap.size} 件)</h3>
+                    <!-- 🔍 検索バー -->
+                    <div style="margin-bottom: 15px; display: flex; gap: 8px;">
+                        <input type="text" id="staff-search-input" placeholder="🔍 ID（例: ABCD または下4桁）で検索" value="${searchQuery}" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;">
+                        <button id="staff-search-clear" style="padding: 10px 15px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">クリア</button>
+                    </div>
+
+                    <h3>⏰ 時間予約リスト (全 ${filteredReservedDocs.length} / ${reservedDocs.length} 件)</h3>
                     <div style="margin-top: 10px;">${reservedListHtml}</div>
                 </div>
             `;
@@ -256,16 +377,22 @@ async function loadStaffView(isBackground = false) {
         else if (currentTab === 'scanner') {
             tabContentHtml = `
                 <div style="background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ccc; text-align: center;">
-                    <h3 style="color: #007bff; margin-top: 0;">📷 カメラでQRコードを読み取る</h3>
-                    <p style="font-size: 13px; color: #666;">お客様のスマホ画面に表示されているQRコードをカメラに向けてください。</p>
+                    <h3 style="color: #007bff; margin-top: 0;">📷 QRコード受付スキャナー</h3>
+                    <p style="font-size: 13px; color: #666;">お客様のスマホ画面に表示されているQRコードをカメラにかざしてください。</p>
                     
-                    <div style="position: relative; width: 100%; max-width: 320px; margin: 0 auto; background: #000; border-radius: 8px; overflow: hidden;">
-                        <video id="qr-video" playsinline style="width: 100%; display: block;"></video>
-                        <canvas id="qr-canvas" style="display: none;"></canvas>
+                    <div id="fresh-qr-video-container" style="width: 100%; max-width: 320px; margin: 15px auto; border-radius: 8px; overflow: hidden; border: 2px solid #007bff;"></div>
+                    
+                    <div id="fresh-scan-status" style="margin-top: 15px; padding: 12px; background: #e3f2fd; border-radius: 6px; border: 1px solid #bbdefb; color: #0d47a1; font-weight: bold; font-size: 14px;">
+                        🔍 カメラを起動中...
                     </div>
-                    
-                    <div id="scan-result-area" style="margin-top: 15px; padding: 15px; background: #f8f9fa; border-radius: 6px; border: 1px solid #ddd; text-align: left;">
-                        <p style="margin: 0; color: #888; text-align: center;">（QRコードをスキャンするとここに予約情報が表示されます）</p>
+
+                    <!-- 🔍 テキスト検索フォールバック（英数字4桁〜部分一致対応） -->
+                    <div style="margin-top: 25px; padding-top: 20px; border-top: 1px dashed #ccc; text-align: left;">
+                        <h4 style="margin: 0 0 8px 0; color: #333; font-size: 14px;">⌨️ カメラで読み取れない場合（ID検索）</h4>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="scanner-manual-input" placeholder="例: ABCD（英文字4桁や部分一致）" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;">
+                            <button id="scanner-manual-search-btn" style="background: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 6px; font-weight: bold; cursor: pointer;">検索</button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -279,10 +406,10 @@ async function loadStaffView(isBackground = false) {
 
             <div style="display: flex; gap: 5px; margin-bottom: 20px; border-bottom: 2px solid #ddd; padding-bottom: 10px; flex-wrap: wrap;">
                 <button class="nav-tab-btn" data-tab="waiting" style="padding: 10px 15px; background: ${currentTab === 'waiting' ? '#28a745' : '#e0e0e0'}; color: ${currentTab === 'waiting' ? 'white' : '#333'}; border: none; border-radius: 5px; font-weight: bold; cursor: pointer;">
-                    📋 順番待ち (${waitingSnap.size})
+                    📋 順番待ち (${waitingDocs.length})
                 </button>
                 <button class="nav-tab-btn" data-tab="timeslot" style="padding: 10px 15px; background: ${currentTab === 'timeslot' ? '#17a2b8' : '#e0e0e0'}; color: ${currentTab === 'timeslot' ? 'white' : '#333'}; border: none; border-radius: 5px; font-weight: bold; cursor: pointer;">
-                    ⏰ 時間予約 (${reservedSnap.size})
+                    ⏰ 時間予約 (${reservedDocs.length})
                 </button>
                 <button class="nav-tab-btn" data-tab="scanner" style="padding: 10px 15px; background: ${currentTab === 'scanner' ? '#007bff' : '#e0e0e0'}; color: ${currentTab === 'scanner' ? 'white' : '#333'}; border: none; border-radius: 5px; font-weight: bold; cursor: pointer;">
                     📷 QRスキャン受付
@@ -295,16 +422,124 @@ async function loadStaffView(isBackground = false) {
         listContainer.innerHTML = "";
         listContainer.appendChild(mainCard);
 
+        // 🔍 リストタブでのリアルタイム検索イベント紐付け
+        const searchInputEl = mainCard.querySelector("#staff-search-input");
+        if (searchInputEl) {
+            searchInputEl.addEventListener("input", (e) => {
+                searchQuery = e.target.value;
+                loadStaffView(true); // バックグラウンド再描画でスムーズに入力維持
+            });
+            // フォーカスを維持して末尾にカーソルを置く
+            setTimeout(() => {
+                const el = document.getElementById("staff-search-input");
+                if (el) {
+                    el.focus();
+                    el.setSelectionRange(el.value.length, el.value.length);
+                }
+            }, 50);
+        }
+
+        const searchClearBtn = mainCard.querySelector("#staff-search-clear");
+        if (searchClearBtn) {
+            searchClearBtn.addEventListener("click", () => {
+                searchQuery = "";
+                loadStaffView(false);
+            });
+        }
+
+        // 🔍 スキャナー画面の手動ID検索イベント紐付け
+        const scannerManualBtn = mainCard.querySelector("#scanner-manual-search-btn");
+        const scannerManualInput = mainCard.querySelector("#scanner-manual-input");
+        if (scannerManualBtn && scannerManualInput) {
+            const executeManualSearch = async () => {
+                const keyword = scannerManualInput.value.trim().toLowerCase();
+                if (!keyword) {
+                    alert("検索するIDを入力してください。");
+                    return;
+                }
+
+                // 全キューから部分一致するものを検索
+                const allQueuesSnap = await getDocs(query(collection(db, "queues"), where("shopId", "==", selectedShopId)));
+                let matchedDocId = null;
+
+                allQueuesSnap.forEach(d => {
+                    if (d.id.toLowerCase().includes(keyword)) {
+                        matchedDocId = d.id;
+                    }
+                });
+
+                if (matchedDocId) {
+                    handleFreshScannedTicket(matchedDocId);
+                } else {
+                    alert(`「${keyword}」に一致するチケットが見つかりませんでした。`);
+                }
+            };
+
+            scannerManualBtn.addEventListener("click", executeManualSearch);
+            scannerManualInput.addEventListener("keypress", (e) => {
+                if (e.key === "Enter") executeManualSearch();
+            });
+        }
+
+        if (countdownTimerInterval) clearInterval(countdownTimerInterval);
+        if (currentTab === 'waiting') {
+            countdownTimerInterval = setInterval(() => {
+                const badges = mainCard.querySelectorAll(".countdown-badge");
+                badges.forEach(badge => {
+                    const deadline = parseInt(badge.getAttribute("data-deadline"), 10);
+                    const remainingMs = deadline - Date.now();
+                    const remainingSec = Math.max(0, Math.floor(remainingMs / 1000));
+                    const remMin = Math.floor(remainingSec / 60);
+                    const remSec = remainingSec % 60;
+                    badge.innerHTML = `📢 呼び出し中 (自動キャンセルまで: ${remMin}分${String(remSec).padStart(2, '0')}秒)`;
+                });
+            }, 1000);
+        }
+
         mainCard.querySelectorAll(".shop-select-tab").forEach(btn => {
-            btn.addEventListener("click", (e) => { selectedShopId = e.target.getAttribute("data-shopid"); loadStaffView(false); });
+            btn.addEventListener("click", (e) => { 
+                selectedShopId = e.target.getAttribute("data-shopid"); 
+                searchQuery = ""; // 店舗切り替え時は検索クリア
+                loadStaffView(false); 
+            });
         });
         mainCard.querySelectorAll(".nav-tab-btn").forEach(btn => {
-            btn.addEventListener("click", (e) => { currentTab = e.target.getAttribute("data-tab"); loadStaffView(false); });
+            btn.addEventListener("click", (e) => { 
+                currentTab = e.target.getAttribute("data-tab"); 
+                searchQuery = ""; // タブ切り替え時は検索クリア
+                loadStaffView(false); 
+            });
         });
 
-        if (currentTab === 'scanner' && !videoStream) startCamera();
+        if (currentTab === 'scanner' && !html5QrCode) {
+            startFreshCamera();
+        }
 
-        // 🛑 順番待ちの一時停止・再開に確認ダイアログを追加
+        const manualIssueBtn = mainCard.querySelector("#manual-issue-btn");
+        if (manualIssueBtn) {
+            manualIssueBtn.addEventListener("click", async () => {
+                const partySize = parseInt(mainCard.querySelector("#manual-party-size").value) || 1;
+                try {
+                    const docRef = await addDoc(collection(db, "queues"), {
+                        shopId: selectedShopId,
+                        shopName: shopData.name,
+                        date: todayStr,
+                        partySize: partySize,
+                        deviceUuid: "staff_manual_issue",
+                        status: "waiting",
+                        type: "queue",
+                        isStaffIssued: true,
+                        createdAt: serverTimestamp()
+                    });
+                    
+                    await handleManualIssuedTicket(docRef.id);
+                } catch (e) {
+                    console.error(e);
+                    alert("手動発行に失敗しました。");
+                }
+            });
+        }
+
         const toggleQueueBtn = mainCard.querySelector("#toggle-queue-btn");
         if (toggleQueueBtn) {
             toggleQueueBtn.addEventListener("click", async () => {
@@ -317,17 +552,15 @@ async function loadStaffView(isBackground = false) {
             });
         }
 
-        // 📢 呼び出しボタンに確認ダイアログを追加
         mainCard.querySelectorAll(".call-btn").forEach(btn => {
             btn.addEventListener("click", async (e) => {
+                const ticketId = e.target.getAttribute("data-id");
                 if (confirm("このお客様を呼び出しますか？")) {
-                    await updateDoc(doc(db, "queues", e.target.getAttribute("data-id")), { status: "called", calledAt: serverTimestamp() });
-                    loadStaffView(false);
+                    await updateDoc(doc(db, "queues", ticketId), { status: "called", calledAt: serverTimestamp() });
                 }
             });
         });
 
-        // ✅ 完了ボタンに確認ダイアログを追加
         mainCard.querySelectorAll(".complete-btn").forEach(btn => {
             btn.addEventListener("click", async (e) => {
                 if (confirm("この受付（予約）を完了にしますか？")) {
@@ -345,61 +578,97 @@ async function loadStaffView(isBackground = false) {
     }
 }
 
-function startCamera() {
-    const video = document.getElementById("qr-video");
-    const canvasElement = document.getElementById("qr-canvas");
-    if (!video || !canvasElement) return;
-    const canvas = canvasElement.getContext("2d");
+let lastScannedId = null;
+let isProcessingFreshScan = false;
 
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then((stream) => {
-        videoStream = stream;
-        video.srcObject = stream;
-        video.setAttribute("playsinline", true);
-        video.play();
-        scanAnimationId = requestAnimationFrame(() => tick(video, canvas));
-    }).catch((err) => { console.error(err); });
+function startFreshCamera() {
+    const statusEl = document.getElementById("fresh-scan-status");
+    
+    if (html5QrCode) {
+        try {
+            html5QrCode.stop().catch(() => {});
+        } catch (e) {}
+        html5QrCode = null;
+    }
+
+    if (!document.getElementById("fresh-qr-video-container")) return;
+
+    html5QrCode = new Html5Qrcode("fresh-qr-video-container");
+    
+    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+    
+    html5QrCode.start(
+        { facingMode: "environment" },
+        config,
+        (decodedText) => {
+            const scannedText = decodedText.trim();
+            if (scannedText && scannedText !== lastScannedId && !isProcessingFreshScan) {
+                lastScannedId = scannedText;
+                console.log("🎉 QRコード検出成功！データ:", scannedText);
+                handleFreshScannedTicket(scannedText);
+                setTimeout(() => { lastScannedId = null; }, 3000);
+            }
+        },
+        (errorMessage) => {}
+    ).then(() => {
+        if (statusEl) statusEl.innerHTML = "🟢 スキャン待機中... QRコードをカメラに映してください";
+    }).catch((err) => {
+        console.error("カメラ起動エラー:", err);
+        if (statusEl) {
+            statusEl.style.background = "#ffebee";
+            statusEl.style.color = "#c62828";
+            statusEl.style.borderColor = "#ffcdd2";
+            statusEl.innerHTML = "❌ カメラの起動に失敗しました（権限を確認してください）";
+        }
+    });
 }
 
 function stopCamera() {
-    if (videoStream) { videoStream.getTracks().forEach(track => track.stop()); videoStream = null; }
-    if (scanAnimationId) { cancelAnimationFrame(scanAnimationId); scanAnimationId = null; }
-}
-
-let lastScannedCode = null;
-let isProcessingScan = false;
-
-function tick(video, canvas) {
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvas.canvas.width = video.videoWidth;
-        canvas.canvas.height = video.videoHeight;
-        canvas.drawImage(video, 0, 0, canvas.canvas.width, canvas.canvas.height);
-        const imageData = canvas.getImageData(0, 0, canvas.canvas.width, canvas.canvas.height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
-
-        if (code) {
-            const scannedId = code.data.trim();
-            if (scannedId && scannedId !== lastScannedCode && !isProcessingScan) {
-                lastScannedCode = scannedId;
-                handleScannedTicket(scannedId);
-                setTimeout(() => { lastScannedCode = null; }, 3000);
-            }
-        }
+    if (html5QrCode) {
+        html5QrCode.stop().then(() => {
+            html5QrCode.clear();
+            html5QrCode = null;
+        }).catch((error) => {
+            html5QrCode = null;
+        });
     }
-    if (currentTab === 'scanner') scanAnimationId = requestAnimationFrame(() => tick(video, canvas));
 }
 
-async function handleScannedTicket(ticketId) {
-    isProcessingScan = true;
-    const resultArea = document.getElementById("scan-result-area");
-    if (!resultArea) { isProcessingScan = false; return; }
+async function handleFreshScannedTicket(ticketId) {
+    isProcessingFreshScan = true;
+    const modalOverlay = document.getElementById("staff-modal-overlay");
+    const modalContent = document.getElementById("staff-modal-content");
+    const statusEl = document.getElementById("fresh-scan-status");
+
+    if (!modalOverlay || !modalContent) {
+        isProcessingFreshScan = false;
+        return;
+    }
+
+    if (statusEl) {
+        statusEl.style.background = "#e8f5e9";
+        statusEl.style.color = "#2e7d32";
+        statusEl.style.borderColor = "#c8e6c9";
+        statusEl.innerHTML = `✅ チケットを検出しました！ (ID: ${ticketId.slice(-4).toUpperCase()})`;
+    }
 
     try {
         const docRef = doc(db, "queues", ticketId);
         const docSnap = await getDoc(docRef);
 
         if (!docSnap.exists()) {
-            resultArea.innerHTML = `<p style="color: red; font-weight: bold; text-align: center;">❌ 無効なチケットです（ID: ${ticketId}）</p>`;
-            isProcessingScan = false;
+            modalContent.innerHTML = `
+                <h2 style="color: #d32f2f; margin-top: 0;">❌ 見つかりません</h2>
+                <p style="font-size: 15px; color: #555;">検索/読み取りID: <strong>${ticketId}</strong></p>
+                <p style="color: #d32f2f; font-weight: bold;">データベースに存在しないか、無効なチケットです。</p>
+                <button id="fresh-modal-close" style="background: #6c757d; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">閉じる</button>
+            `;
+            modalOverlay.style.display = "flex";
+            document.getElementById("fresh-modal-close").onclick = () => {
+                modalOverlay.style.display = "none";
+                isProcessingFreshScan = false;
+                if (statusEl) statusEl.innerHTML = "🔍 スキャン待機中... QRコードを映してください";
+            };
             return;
         }
 
@@ -409,56 +678,223 @@ async function handleScannedTicket(ticketId) {
         const partySize = data.partySize || 1;
         const currentStatus = data.status;
 
+        let statusText = "順番待ち中";
+        if (currentStatus === "called") statusText = "📢 お呼び出し中";
+        else if (currentStatus === "reserved") statusText = "⏰ 時間予約";
+        else if (currentStatus === "completed") statusText = "✅ 受付完了済み";
+
         if (currentStatus === "completed") {
-            resultArea.innerHTML = `
-                <div style="background: #fff3cd; border: 1px solid #ffeeba; padding: 10px; border-radius: 6px;">
-                    <p style="margin: 0; color: #856404; font-weight: bold;">⚠️ このチケットはすでに受付完了しています</p>
-                    <p style="margin: 4px 0 0 0; font-size: 13px;">ID: <strong>${idShort}</strong> / ${partySize}人</p>
+            modalContent.innerHTML = `
+                <h2 style="color: #856404; margin-top: 0;">⚠️ すでに受付が完了しています</h2>
+                <div style="background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin: 15px 0; text-align: left;">
+                    <p style="margin: 4px 0; font-size: 16px;">予約ID: <strong>${idShort}</strong></p>
+                    <p style="margin: 4px 0; font-size: 16px;">種類: <strong>${typeText}</strong></p>
+                    <p style="margin: 4px 0; font-size: 16px;">人数: <strong>${partySize} 人</strong></p>
                 </div>
+                <button id="fresh-modal-close" style="background: #007bff; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 10px;">確認（閉じる）</button>
             `;
-            isProcessingScan = false;
+            modalOverlay.style.display = "flex";
+            document.getElementById("fresh-modal-close").onclick = () => {
+                modalOverlay.style.display = "none";
+                isProcessingFreshScan = false;
+                if (statusEl) statusEl.innerHTML = "🔍 スキャン待機中... QRコードを映してください";
+            };
             return;
         }
 
-        resultArea.innerHTML = `
-            <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 12px; border-radius: 6px;">
-                <p style="margin: 0 0 8px 0; font-weight: bold; color: #0d47a1;">👤 読み取ったお客様の予約情報</p>
-                <p style="margin: 4px 0; font-size: 14px;">予約ID: <strong>${idShort}</strong></p>
-                <p style="margin: 4px 0; font-size: 14px;">種類: <strong>${typeText}</strong></p>
-                <p style="margin: 4px 0; font-size: 14px;">人数: <strong>${partySize} 人</strong></p>
-                <p style="margin: 4px 0 8px 0; font-size: 14px;">現在の状態: <strong>${currentStatus === 'called' ? 'お呼び出し中' : (currentStatus === 'reserved' ? '時間予約' : '順番待ち')}</strong></p>
-                
-                <button id="confirm-scan-complete-btn" style="background: #28a745; color: white; border: none; padding: 10px; border-radius: 5px; font-weight: bold; width: 100%; cursor: pointer; font-size: 15px;">
-                    ✅ この内容で受付を完了する
+        modalContent.innerHTML = `
+            <h2 style="color: #0d47a1; margin-top: 0;">👤 お客様の予約情報</h2>
+            <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 18px; border-radius: 8px; margin: 15px 0; text-align: left;">
+                <p style="margin: 6px 0; font-size: 18px;">受付ID: <strong style="color: #d9534f; font-size: 22px;">${idShort}</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">種類: <strong>${typeText}</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 人</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">現在の状態: <strong>${statusText}</strong></p>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                <button id="fresh-accept-btn" style="background: #28a745; color: white; border: none; padding: 14px; border-radius: 6px; font-weight: bold; flex: 1; cursor: pointer; font-size: 16px;">
+                    ✅ 受付をしますか？
+                </button>
+                <button id="fresh-dismiss-btn" style="background: #6c757d; color: white; border: none; padding: 14px; border-radius: 6px; font-weight: bold; width: 100px; cursor: pointer; font-size: 16px;">
+                    キャンセル
                 </button>
             </div>
         `;
+        modalOverlay.style.display = "flex";
 
-        const confirmBtn = resultArea.querySelector("#confirm-scan-complete-btn");
-        confirmBtn.addEventListener("click", async () => {
-            if (confirm("このお客様の受付を完了にしますか？")) {
-                confirmBtn.disabled = true;
-                confirmBtn.innerText = "処理中...";
-                
-                await updateDoc(docRef, { 
-                    status: "completed", 
-                    completedAt: serverTimestamp() 
-                });
+        document.getElementById("fresh-accept-btn").onclick = async () => {
+            if (confirm(`【確認】本当にこのお客様（ID: ${idShort} / ${partySize}人）の受付を完了にしますか？`)) {
+                const acceptBtn = document.getElementById("fresh-accept-btn");
+                acceptBtn.disabled = true;
+                acceptBtn.innerText = "処理中...";
 
-                resultArea.innerHTML = `
-                    <div style="background: #e8f5e9; border: 1px solid #c8e6c9; padding: 12px; border-radius: 6px; text-align: center;">
-                        <p style="margin: 0; color: #2e7d32; font-weight: bold; font-size: 16px;">✅ 受付が完了しました！</p>
-                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #555;">ID: ${idShort} (${partySize}人)</p>
-                    </div>
-                `;
+                try {
+                    await updateDoc(docRef, {
+                        status: "completed",
+                        completedAt: serverTimestamp()
+                    });
+
+                    modalContent.innerHTML = `
+                        <h2 style="color: #2e7d32; margin-top: 0;">🎉 受付完了しました！</h2>
+                        <p style="font-size: 18px; margin: 10px 0;">ID: <strong>${idShort}</strong> (${partySize}人)</p>
+                        <p style="color: #666; font-size: 14px;">正常に来場・受付処理が完了しました。</p>
+                        <button id="fresh-success-ok" style="background: #28a745; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">OK（次へ進む）</button>
+                    `;
+
+                    document.getElementById("fresh-success-ok").onclick = () => {
+                        modalOverlay.style.display = "none";
+                        isProcessingFreshScan = false;
+                        if (statusEl) statusEl.innerHTML = "🔍 スキャン待機中... QRコードを映してください";
+                        loadStaffView(false);
+                    };
+                } catch (updateErr) {
+                    console.error(updateErr);
+                    alert("受付処理の保存に失敗しました。");
+                    acceptBtn.disabled = false;
+                    acceptBtn.innerText = "✅ 受付をしますか？";
+                }
             }
-            isProcessingScan = false;
-        });
+        };
+
+        document.getElementById("fresh-dismiss-btn").onclick = () => {
+            modalOverlay.style.display = "none";
+            isProcessingFreshScan = false;
+            if (statusEl) statusEl.innerHTML = "🔍 スキャン待機中... QRコードを映してください";
+        };
 
     } catch (e) {
         console.error(e);
-        resultArea.innerHTML = `<p style="color: red; font-weight: bold;">エラーが発生しました。</p>`;
-        isProcessingScan = false;
+        modalContent.innerHTML = `
+            <h2 style="color: red; margin-top: 0;">エラーが発生しました</h2>
+            <button id="fresh-modal-close" style="background: #6c757d; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">閉じる</button>
+        `;
+        modalOverlay.style.display = "flex";
+        document.getElementById("fresh-modal-close").onclick = () => {
+            modalOverlay.style.display = "none";
+            isProcessingFreshScan = false;
+            if (statusEl) statusEl.innerHTML = "🔍 スキャン待機中... QRコードを映してください";
+        };
+    }
+}
+
+async function handleManualIssuedTicket(ticketId) {
+    isProcessingFreshScan = true;
+    const modalOverlay = document.getElementById("staff-modal-overlay");
+    const modalContent = document.getElementById("staff-modal-content");
+
+    if (!modalOverlay || !modalContent) {
+        isProcessingFreshScan = false;
+        return;
+    }
+
+    try {
+        const docRef = doc(db, "queues", ticketId);
+        const docSnap = await getDoc(docRef);
+
+        if (!docSnap.exists()) {
+            modalContent.innerHTML = `
+                <h2 style="color: #d32f2f; margin-top: 0;">❌ エラー</h2>
+                <button id="fresh-modal-close" style="background: #6c757d; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">閉じる</button>
+            `;
+            modalOverlay.style.display = "flex";
+            document.getElementById("fresh-modal-close").onclick = () => {
+                modalOverlay.style.display = "none";
+                isProcessingFreshScan = false;
+                loadStaffView(false);
+            };
+            return;
+        }
+
+        const data = docSnap.data();
+        const shopId = data.shopId;
+
+        const shopDoc = await getDoc(doc(db, "shops", shopId));
+        const shopData = shopDoc.exists() ? shopDoc.data() : {};
+        const standardGroupSize = shopData.standardGroupSize || 4;
+        const minutesPerGroup = shopData.minutesPerGroup !== undefined ? shopData.minutesPerGroup : 10;
+
+        const qWaiting = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "in", ["waiting", "called"]));
+        const queueSnapshot = await getDocs(qWaiting);
+        const waitingDocs = [];
+        queueSnapshot.forEach(d => waitingDocs.push({ id: d.id, ...d.data() }));
+        waitingDocs.sort((a, b) => {
+            const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+            const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+            return timeA - timeB;
+        });
+
+        let aheadPeople = 0;
+        for (let i = 0; i < waitingDocs.length; i++) {
+            if (waitingDocs[i].id === ticketId) break;
+            if (waitingDocs[i].status === "waiting") {
+                aheadPeople += (waitingDocs[i].partySize || 1);
+            }
+        }
+        const slotIndex = Math.floor(aheadPeople / standardGroupSize);
+        const estimatedMinutes = slotIndex * minutesPerGroup;
+
+        const idShort = ticketId.slice(-4).toUpperCase();
+        const partySize = data.partySize || 1;
+
+        modalContent.innerHTML = `
+            <h2 style="color: #0d47a1; margin-top: 0;">🎫 手動発券された予約情報</h2>
+            <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 18px; border-radius: 8px; margin: 15px 0; text-align: left;">
+                <p style="margin: 6px 0; font-size: 18px;">受付ID: <strong style="color: #d9534f; font-size: 22px;">${idShort}</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">種類: <strong>紙の整理券（手動発券）</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 人</strong></p>
+                
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #90caf9; font-size: 16px; color: #0d47a1;">
+                    前のお待ち人数: <strong>${aheadPeople} 人</strong><br>
+                    およその待ち時間: <strong>約 ${estimatedMinutes} 分</strong>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                <button id="fresh-accept-btn" style="background: #28a745; color: white; border: none; padding: 14px; border-radius: 6px; font-weight: bold; flex: 1; cursor: pointer; font-size: 16px;">
+                    ✅ 順番待ち予約をしますか？
+                </button>
+                <button id="fresh-dismiss-btn" style="background: #6c757d; color: white; border: none; padding: 14px; border-radius: 6px; font-weight: bold; width: 100px; cursor: pointer; font-size: 16px;">
+                    キャンセル
+                </button>
+            </div>
+        `;
+        modalOverlay.style.display = "flex";
+
+        document.getElementById("fresh-accept-btn").onclick = async () => {
+            const acceptBtn = document.getElementById("fresh-accept-btn");
+            acceptBtn.disabled = true;
+            acceptBtn.innerText = "処理中...";
+
+            modalOverlay.style.display = "none";
+            isProcessingFreshScan = false;
+            loadStaffView(false);
+        };
+
+        document.getElementById("fresh-dismiss-btn").onclick = async () => {
+            if (confirm("この手動発券を取り消しますか？")) {
+                try {
+                    await deleteDoc(docRef);
+                } catch (e) {
+                    console.error(e);
+                }
+            }
+            modalOverlay.style.display = "none";
+            isProcessingFreshScan = false;
+            loadStaffView(false);
+        };
+
+    } catch (e) {
+        console.error(e);
+        modalContent.innerHTML = `
+            <h2 style="color: red; margin-top: 0;">エラーが発生しました</h2>
+            <button id="fresh-modal-close" style="background: #6c757d; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">閉じる</button>
+        `;
+        modalOverlay.style.display = "flex";
+        document.getElementById("fresh-modal-close").onclick = () => {
+            modalOverlay.style.display = "none";
+            isProcessingFreshScan = false;
+            loadStaffView(false);
+        };
     }
 }
 
@@ -472,15 +908,11 @@ function updateLastRefreshTime() {
 }
 
 onSnapshot(collection(db, "shops"), () => {
-    if (currentTab !== 'scanner') {
-        loadStaffView(true);
-    }
+    if (currentTab !== 'scanner') loadStaffView(true);
 });
 
 onSnapshot(collection(db, "queues"), () => {
-    if (currentTab !== 'scanner') {
-        loadStaffView(true);
-    }
+    if (currentTab !== 'scanner') loadStaffView(true);
 });
 
 checkStaffAuth().then(authed => {

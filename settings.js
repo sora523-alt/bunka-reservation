@@ -29,18 +29,14 @@ function getExpectedToken() {
     const now = new Date();
     const totalMinutes = now.getHours() * 60 + now.getMinutes();
     const blockIndex = Math.floor(totalMinutes / 5);
-    
     const seed = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate() + blockIndex;
     const x = Math.sin(seed) * 10000;
-    const randomNum = Math.floor((x - Math.floor(x)) * 900000) + 100000;
-    
-    return String(randomNum);
+    return String(Math.floor((x - Math.floor(x)) * 900000) + 100000);
 }
 
 async function checkStaffAuth() {
     const overlay = document.getElementById("auth-overlay");
     const isAuthed = localStorage.getItem("staff_authenticated");
-    
     if (isAuthed === "true") {
         try {
             const sessionDoc = await getDoc(doc(db, "staff_sessions", staffSessionId));
@@ -52,11 +48,9 @@ async function checkStaffAuth() {
         } catch (e) {
             console.error(e);
         }
-
         if (overlay) overlay.style.display = "none";
         return true;
     }
-
     if (overlay) overlay.style.display = "flex";
     return false;
 }
@@ -73,16 +67,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (inputVal === correctToken || inputVal === "bunka2026") {
                 localStorage.setItem("staff_authenticated", "true");
-                
                 await setDoc(doc(db, "staff_sessions", staffSessionId), {
                     loginAt: serverTimestamp(),
                     userAgent: navigator.userAgent
                 });
-
                 document.getElementById("auth-overlay").style.display = "none";
                 loadSettingsView();
             } else {
-                errorMsg.textContent = "❌ トークンが正しくないか、有効期限が切れています。";
+                errorMsg.textContent = "❌ トークンが正しくありません。";
                 errorMsg.style.display = "block";
             }
         });
@@ -131,9 +123,7 @@ async function loadSettingsView() {
             return;
         }
 
-        if (!selectedShopId) {
-            selectedShopId = shopsSnapshot.docs[0].id;
-        }
+        if (!selectedShopId) selectedShopId = shopsSnapshot.docs[0].id;
 
         let shopSelectorHtml = `<div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">`;
         shopsSnapshot.docs.forEach(docSnap => {
@@ -149,9 +139,7 @@ async function loadSettingsView() {
         shopSelectorHtml += `</div>`;
 
         let shopData = {};
-        shopsSnapshot.docs.forEach(d => {
-            if (d.id === selectedShopId) shopData = d.data();
-        });
+        shopsSnapshot.docs.forEach(d => { if (d.id === selectedShopId) shopData = d.data(); });
 
         const dateSlotsMap = shopData.dateSlots || {
             [todayStr]: shopData.timeSlots || { "10:00-10:30": 5, "11:00-11:30": 5 }
@@ -162,7 +150,9 @@ async function loadSettingsView() {
             activeSettingDate = availableDates.includes(todayStr) ? todayStr : availableDates[0];
         }
 
-        const autoExpireMinutes = shopData.autoExpireMinutes !== undefined ? shopData.autoExpireMinutes : 1;
+        const autoExpireMinutes = shopData.autoExpireMinutes !== undefined ? shopData.autoExpireMinutes : 1; // 呼び出し後（当日用）
+        const timeslotExpireMinutes = shopData.timeslotExpireMinutes !== undefined ? shopData.timeslotExpireMinutes : 10; // 時間予約の終了後
+        const closeBeforeMinutes = shopData.closeBeforeMinutes !== undefined ? shopData.closeBeforeMinutes : 0; // 開始何分前に非表示・締め切り
         const minutesPerGroup = shopData.minutesPerGroup !== undefined ? shopData.minutesPerGroup : 10;
         const standardGroupSize = shopData.standardGroupSize !== undefined ? shopData.standardGroupSize : 4;
 
@@ -200,23 +190,33 @@ async function loadSettingsView() {
             <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
 
             <h3 style="color: #0056b3;">⚙️ 運用・タイムスロット設定</h3>
-            <div style="margin-top: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <div style="margin-top: 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
                 <div>
                     <label><strong>基準人数:</strong></label><br>
-                    <input type="number" id="group-size-input" value="${standardGroupSize}" style="width: 80px; padding: 6px; margin-top: 4px;"> 人 あたり
+                    <input type="number" id="group-size-input" value="${standardGroupSize}" style="width: 80px; padding: 6px; margin-top: 4px;"> 人
                 </div>
                 <div>
-                    <label><strong>かかる時間:</strong></label><br>
+                    <label><strong>1組の時間:</strong></label><br>
                     <input type="number" id="time-per-group-input" value="${minutesPerGroup}" style="width: 80px; padding: 6px; margin-top: 4px;"> 分
                 </div>
             </div>
 
             <div style="margin-top: 20px; background: #fffde7; padding: 12px; border-radius: 6px; border: 1px solid #ffe082;">
-                <label><strong style="color: #856404;">📢 呼び出し後のご案内猶予時間（自動キャンセル時間）:</strong></label><br>
+                <label><strong style="color: #856404;">📢 当日順番待ち：呼び出し後のご案内猶予時間（自動キャンセル時間）:</strong></label><br>
                 <input type="number" id="expire-input" value="${autoExpireMinutes}" style="width: 80px; padding: 6px; margin-top: 6px;"> 分
             </div>
 
-            <div style="margin-top: 20px;">
+            <div style="margin-top: 15px; background: #e8f4fd; padding: 12px; border-radius: 6px; border: 1px solid #b8daff;">
+                <label><strong style="color: #004085;">⏳ 時間予約：終了時刻から何分過ぎたら自動キャンセルするか:</strong></label><br>
+                <input type="number" id="timeslot-expire-input" value="${timeslotExpireMinutes}" style="width: 80px; padding: 6px; margin-top: 6px;"> 分 <span style="font-size:12px; color:#666;">(例: 17:00終了で10分なら17:10に無効化)</span>
+            </div>
+
+            <div style="margin-top: 15px; background: #f0f4f8; padding: 12px; border-radius: 6px; border: 1px solid #d1d9e0;">
+                <label><strong style="color: #333;">⏰ 予約枠の事前締め切り設定:</strong></label><br>
+                <input type="number" id="close-input" value="${closeBeforeMinutes}" style="width: 80px; padding: 6px; margin-top: 4px;"> 分前になったら、その予約枠を自動的に非表示にして締め切る <span style="font-size:12px; color:#666;">(0で直前まで受付)</span>
+            </div>
+
+            <div style="margin-top: 20px; border-top: 1px dashed #ccc; padding-top: 15px;">
                 <h4 style="margin-top: 0;">📅 設定する日付の選択</h4>
                 ${dateTabsHtml}
                 ${deleteDateButtonHtml}
@@ -225,6 +225,29 @@ async function loadSettingsView() {
                     <input type="text" id="new-date-input" placeholder="例: 20261016" style="padding: 6px; width: 160px;">
                     <button type="button" id="add-date-btn" style="background: #17a2b8; color: white; border: none; padding: 7px 14px; border-radius: 4px; cursor: pointer; font-weight: bold;">＋ 新しい日付を追加</button>
                 </div>
+            </div>
+
+            <div style="background: #f8f9fa; border: 1px solid #ccc; padding: 15px; border-radius: 6px; margin-top: 15px;">
+                <h4 style="margin-top: 0; color: #007bff;">🪄 【${activeSettingDate}】の枠を一括自動生成</h4>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;">
+                    <div>
+                        <label style="font-size: 12px;">開始時刻:</label><br>
+                        <input type="time" id="gen-start" value="10:00" style="padding: 6px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 12px;">終了時刻:</label><br>
+                        <input type="time" id="gen-end" value="16:00" style="padding: 6px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 12px;">間隔(分):</label><br>
+                        <input type="number" id="gen-interval" value="30" style="width: 70px; padding: 6px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 12px;">各枠の定員:</label><br>
+                        <input type="number" id="gen-limit" value="5" style="width: 70px; padding: 6px;">
+                    </div>
+                </div>
+                <button type="button" id="generate-slots-btn" style="background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 4px; font-weight: bold; cursor: pointer;">この条件で枠を一括生成する</button>
             </div>
 
             <h4 style="margin-top: 25px;">⏰ 【${activeSettingDate}】の時間予約枠と定員の編集</h4>
@@ -252,39 +275,59 @@ async function loadSettingsView() {
             });
         });
 
-        const deleteDateBtn = mainCard.querySelector("#delete-active-date-btn");
-        if (deleteDateBtn) {
-            deleteDateBtn.addEventListener("click", async () => {
-                if (confirm(`本当に日付「${activeSettingDate}」を削除しますか？`)) {
-                    delete dateSlotsMap[activeSettingDate];
-                    const remainingDates = Object.keys(dateSlotsMap);
-                    activeSettingDate = remainingDates.length > 0 ? remainingDates[0] : null;
-                    await updateDoc(doc(db, "shops", selectedShopId), { dateSlots: dateSlotsMap });
-                    alert("日付を削除しました！");
-                    loadSettingsView();
-                }
-            });
-        }
+        const generateBtn = mainCard.querySelector("#generate-slots-btn");
+        if (generateBtn) {
+            generateBtn.addEventListener("click", () => {
+                const startTimeStr = mainCard.querySelector("#gen-start").value;
+                const endTimeStr = mainCard.querySelector("#gen-end").value;
+                const interval = parseInt(mainCard.querySelector("#gen-interval").value) || 30;
+                const defaultLimit = parseInt(mainCard.querySelector("#gen-limit").value) || 5;
 
-        const addDateBtn = mainCard.querySelector("#add-date-btn");
-        if (addDateBtn) {
-            addDateBtn.addEventListener("click", () => {
-                const rawInput = mainCard.querySelector("#new-date-input").value;
-                const formattedDate = formatAutoDate(rawInput);
-                if (!formattedDate || formattedDate.length < 5) {
-                    alert("有効な日付を入力してください（例: 20261016）。");
+                if (!startTimeStr || !endTimeStr) {
+                    alert("開始時刻と終了時刻を入力してください。");
                     return;
                 }
-                if (!dateSlotsMap[formattedDate]) {
-                    dateSlotsMap[formattedDate] = {};
-                    activeSettingDate = formattedDate;
-                    updateDoc(doc(db, "shops", selectedShopId), { dateSlots: dateSlotsMap }).then(() => {
-                        alert(`新しい日付「${formattedDate}」を追加しました！`);
-                        loadSettingsView();
-                    });
-                } else {
-                    alert("その日付はすでに存在します。");
+
+                const [startH, startM] = startTimeStr.split(":").map(Number);
+                const [endH, endM] = endTimeStr.split(":").map(Number);
+
+                let curMin = startH * 60 + startM;
+                const endMin = endH * 60 + endM;
+
+                if (curMin >= endMin) {
+                    alert("終了時刻は開始時刻より後に設定してください。");
+                    return;
                 }
+
+                const editor = mainCard.querySelector("#slots-editor");
+                editor.innerHTML = "";
+
+                while (curMin + interval <= endMin) {
+                    const h1 = Math.floor(curMin / 60).toString().padStart(2, '0');
+                    const m1 = (curMin % 60).toString().padStart(2, '0');
+                    
+                    const nextMin = curMin + interval;
+                    const h2 = Math.floor(nextMin / 60).toString().padStart(2, '0');
+                    const m2 = (nextMin % 60).toString().padStart(2, '0');
+
+                    const timeSlotStr = `${h1}:${m1}-${h2}:${m2}`;
+
+                    const newRow = document.createElement("div");
+                    newRow.className = "slot-row";
+                    newRow.style.cssText = "display: flex; gap: 10px; align-items: center; margin-bottom: 8px;";
+                    newRow.innerHTML = `
+                        <input type="text" class="slot-time-input" value="${timeSlotStr}" style="width: 110px; padding: 6px;">
+                        <span>定員:</span>
+                        <input type="number" class="slot-limit-input" value="${defaultLimit}" style="width: 60px; padding: 6px;"> 人
+                        <button type="button" class="del-slot-btn" style="background:#ff4d4d; color:white; border:none; padding:6px 10px; border-radius:4px; cursor:pointer;">削除</button>
+                    `;
+                    editor.appendChild(newRow);
+                    bindDeleteButtons(newRow);
+
+                    curMin = nextMin;
+                }
+
+                alert("タイムスロットを一括生成しました！「設定を保存する」を押して確定させてください。");
             });
         }
 
@@ -330,6 +373,8 @@ async function loadSettingsView() {
             const newGroupSize = parseInt(mainCard.querySelector("#group-size-input").value) || 4;
             const newMinutesPerGroup = parseInt(mainCard.querySelector("#time-per-group-input").value) || 10;
             const newExpireMinutes = parseInt(mainCard.querySelector("#expire-input").value);
+            const newTimeslotExpireMinutes = parseInt(mainCard.querySelector("#timeslot-expire-input").value);
+            const newCloseMinutes = parseInt(mainCard.querySelector("#close-input").value) || 0;
 
             try {
                 await updateDoc(doc(db, "shops", selectedShopId), {
@@ -337,7 +382,9 @@ async function loadSettingsView() {
                     timeSlots: dateSlotsMap[todayStr] || newTimeSlots,
                     standardGroupSize: newGroupSize,
                     minutesPerGroup: newMinutesPerGroup,
-                    autoExpireMinutes: isNaN(newExpireMinutes) ? 1 : newExpireMinutes
+                    autoExpireMinutes: isNaN(newExpireMinutes) ? 1 : newExpireMinutes,
+                    timeslotExpireMinutes: isNaN(newTimeslotExpireMinutes) ? 10 : newTimeslotExpireMinutes,
+                    closeBeforeMinutes: newCloseMinutes
                 });
                 alert("店舗の設定を保存しました！");
                 loadSettingsView();
@@ -356,21 +403,4 @@ checkStaffAuth().then(authed => {
     if (authed) {
         loadSettingsView();
     }
-});
-
-function updateLastRefreshTime() {
-    const now = new Date();
-    const timeString = now.toLocaleTimeString();
-    const updateEl = document.getElementById('last-updated');
-    if (updateEl) {
-        updateEl.textContent = `最終更新: ${timeString}`;
-    }
-}
-
-updateLastRefreshTime();
-onSnapshot(collection(db, "shops"), () => { 
-    checkStaffAuth().then(authed => {
-        if (authed) loadSettingsView();
-    });
-    updateLastRefreshTime(); 
 });

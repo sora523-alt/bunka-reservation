@@ -17,7 +17,7 @@
         .danger-btn { background: #dc3545; padding: 6px 12px; font-size: 12px; }
         .danger-btn:hover { background: #bd2130; }
 
-        /* 🔒 認証オーバーレイ（背景を完全に不透明な黒に変更） */
+        /* 🔒 認証オーバーレイ */
         #token-auth-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: #111111; display: flex; justify-content: center; align-items: center; z-index: 9999;
@@ -32,7 +32,7 @@
 </head>
 <body>
 
-<!-- 🔒 トークン画面専用のパスワード認証 (20010904) -->
+<!-- 🔒 トークン画面専用のパスワード認証 -->
 <div id="token-auth-overlay">
     <div class="auth-box">
         <h2 style="color: #0056b3; margin-top: 0;">🔐 管理トークン認証</h2>
@@ -56,7 +56,7 @@
 <!-- 🔑 お客様用パスワードの設定カード -->
 <div class="card" style="text-align: left;">
     <h1>🔑 お客様用ページパスワード設定</h1>
-    <p class="info" style="margin-bottom: 15px;">来場者や生徒が予約画面を開くときに入力する合言葉を変更できます。変更すると、現在ログイン中のお客様は自動的にログアウト（再認証が必要に）されます。</p>
+    <p class="info" style="margin-bottom: 15px;">来場者や生徒が予約画面を開くときに入力する合言葉を変更できます。</p>
     <div style="display: flex; gap: 10px;">
         <input type="text" id="customer-pass-input" placeholder="新しいパスワード" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px;">
         <button id="save-customer-pass-btn" style="background: #28a745;">パスワード変更</button>

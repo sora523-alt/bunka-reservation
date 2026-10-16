@@ -14,7 +14,21 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// 🔒 token.html 専用のパスワード認証 (20010904)
+// 💡 パスワードを平文で書かず、Base64等でエンコードした状態で保持
+// "20010904" -> "MjAwMTA5MDQ="
+// "bunka2026" -> "YnVua2EyMDI2"
+const ENCODED_MASTER_PASS = "MjAwMTA5MDQ=";
+const ENCODED_DEFAULT_CUSTOMER_PASS = "YnVua2EyMDI2=";
+
+function decodePass(encodedStr) {
+    try {
+        return atob(encodedStr);
+    } catch (e) {
+        return "";
+    }
+}
+
+// 🔒 token.html 専用のパスワード認証
 document.addEventListener("DOMContentLoaded", () => {
     const overlay = document.getElementById("token-auth-overlay");
     const submitBtn = document.getElementById("token-submit-btn");
@@ -23,7 +37,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (submitBtn) {
         submitBtn.addEventListener("click", () => {
-            if (passInput.value.trim() === "20010904") {
+            const inputVal = passInput.value.trim();
+            const correctPass = decodePass(ENCODED_MASTER_PASS);
+
+            if (inputVal === correctPass) {
                 overlay.style.display = "none";
             } else {
                 errorMsg.textContent = "❌ パスワードが違います。";
@@ -45,10 +62,11 @@ document.addEventListener("DOMContentLoaded", () => {
     async function loadCurrentCustomerPassword() {
         try {
             const configDoc = await getDoc(doc(db, "settings", "app_config"));
+            const defaultPass = decodePass(ENCODED_DEFAULT_CUSTOMER_PASS);
             if (configDoc.exists()) {
-                customerPassInput.value = configDoc.data().customerPassword || "bunka2026";
+                customerPassInput.value = configDoc.data().customerPassword || defaultPass;
             } else {
-                customerPassInput.value = "bunka2026";
+                customerPassInput.value = defaultPass;
             }
         } catch (e) {
             console.error("パスワード読込エラー:", e);
@@ -66,7 +84,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (confirm(`お客様用パスワードを「${newPass}」に変更しますか？\n（変更すると、現在ログイン中のお客様は自動的にログアウトされます）`)) {
                 try {
-                    // 💡 ドキュメントを確実に作成・上書き保存
                     await setDoc(doc(db, "settings", "app_config"), {
                         customerPassword: newPass,
                         updatedAt: new Date().toISOString()

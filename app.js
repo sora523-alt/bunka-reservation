@@ -14,7 +14,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// 🔒 お客様用パスワード認証の確認とリアルタイム監視
 async function checkCustomerAuth() {
     const overlay = document.getElementById("customer-auth-overlay");
     const isAuthed = localStorage.getItem("customer_authenticated") === "true";
@@ -38,7 +37,6 @@ async function checkCustomerAuth() {
     return true;
 }
 
-// 💡 パスワードが変更されたら即座にログアウトさせるリアルタイム監視
 onSnapshot(doc(db, "settings", "app_config"), (docSnap) => {
     if (docSnap.exists() && localStorage.getItem("customer_authenticated") === "true") {
         const serverPass = docSnap.data().customerPassword || "bunka2026";
@@ -105,7 +103,7 @@ function getTodayDateString() {
 
 let userTab = 'shops';
 let userSelectedDates = {};
-let countdownInterval = null;
+let customerCountdownInterval = null;
 
 async function loadShops() {
     const isAuth = await checkCustomerAuth();
@@ -133,6 +131,8 @@ async function loadShops() {
     container.innerHTML = headerNavHtml + `<div id="user-main-content">読み込み中...</div>`;
     const mainContent = document.getElementById("user-main-content");
     mainContent.innerHTML = "";
+
+    if (customerCountdownInterval) clearInterval(customerCountdownInterval);
 
     try {
         if (userTab === 'history') {
@@ -202,6 +202,7 @@ async function loadShops() {
                 const standardGroupSize = data.standardGroupSize || 4;
                 const minutesPerGroup = data.minutesPerGroup !== undefined ? data.minutesPerGroup : 10;
                 const autoExpireMinutes = data.autoExpireMinutes !== undefined ? data.autoExpireMinutes : 1;
+                const timeslotExpireMinutes = data.timeslotExpireMinutes !== undefined ? data.timeslotExpireMinutes : 10;
                 const isQueueStopped = data.isQueueStopped === true;
 
                 const dateSlotsMap = data.dateSlots || {
@@ -215,14 +216,23 @@ async function loadShops() {
                 const activeDate = userSelectedDates[shopId];
                 const timeSlots = dateSlotsMap[activeDate] || {};
 
-                const qWaiting = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "waiting"));
+                const qWaiting = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "in", ["waiting", "called"]));
                 const queueSnapshot = await getDocs(qWaiting);
                 
-                let totalWaitingPeople = 0;
-                queueSnapshot.forEach(wDoc => {
-                    totalWaitingPeople += (wDoc.data().partySize || 1);
+                const waitingDocs = [];
+                queueSnapshot.forEach(doc => waitingDocs.push({ id: doc.id, ...doc.data() }));
+                waitingDocs.sort((a, b) => {
+                    const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+                    const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+                    return timeA - timeB;
                 });
-                const totalEstMin = Math.ceil(totalWaitingPeople / standardGroupSize) * minutesPerGroup;
+
+                let totalWaitingPeople = 0;
+                waitingDocs.forEach(w => {
+                    if (w.status === "waiting") totalWaitingPeople += (w.partySize || 1);
+                });
+                const totalSlotIndex = Math.floor(totalWaitingPeople / standardGroupSize);
+                const totalEstMin = totalSlotIndex * minutesPerGroup;
 
                 const myActiveQuery = query(
                     collection(db, "queues"), 
@@ -242,65 +252,50 @@ async function loadShops() {
                     const currentSize = ticketData.partySize || 1;
 
                     let waitInfoHtml = "";
-                    if (ticketData.type === "queue" && ticketStatus === "waiting") {
-                        let aheadPeople = 0;
-                        const allWaitingDocs = queueSnapshot.docs;
-                        for (let i = 0; i < allWaitingDocs.length; i++) {
-                            if (allWaitingDocs[i].id === activeTicketDoc.id) break;
-                            aheadPeople += (allWaitingDocs[i].data().partySize || 1);
+                    if (ticketData.type === "queue") {
+                        if (ticketStatus === "called") {
+                            const calledTime = ticketData.calledAt && typeof ticketData.calledAt.toMillis === 'function' ? ticketData.calledAt.toMillis() : (ticketData.calledAt ? new Date(ticketData.calledAt).getTime() : Date.now());
+                            const expireMs = autoExpireMinutes * 60 * 1000;
+                            const deadline = calledTime + expireMs;
+                            
+                            waitInfoHtml = `
+                                <div style="margin: 10px 0; padding: 10px; background: #fff3cd; border: 1px solid #ffeeba; border-radius: 6px; color: #856404; font-weight: bold;">
+                                    📢 お呼び出しがかかりました！<br>
+                                    <span class="customer-countdown" data-deadline="${deadline}" style="font-size: 16px; color: #d9534f;">自動キャンセルまで: 計算中...</span>
+                                </div>
+                            `;
+                        } else if (ticketStatus === "waiting") {
+                            let aheadPeople = 0;
+                            for (let i = 0; i < waitingDocs.length; i++) {
+                                if (waitingDocs[i].id === activeTicketDoc.id) break;
+                                if (waitingDocs[i].status === "waiting") {
+                                    aheadPeople += (waitingDocs[i].partySize || 1);
+                                }
+                            }
+                            const slotIndex = Math.floor(aheadPeople / standardGroupSize);
+                            const estimatedMinutes = slotIndex * minutesPerGroup;
+
+                            waitInfoHtml = `
+                                <p style="margin: 8px 0; font-size: 15px; color: #333;">
+                                    あなたの前には <strong>${aheadPeople} 人</strong> お待ちです<br>
+                                    およその待ち時間: <strong>約 ${estimatedMinutes} 分</strong>
+                                </p>
+                            `;
                         }
-                        const estimatedMinutes = Math.ceil(aheadPeople / standardGroupSize) * minutesPerGroup;
+                    } else if (ticketData.type === "timeslot" && ticketData.timeSlot) {
+                        const endTimePart = ticketData.timeSlot.split("-")[1].trim();
+                        const [endH, endM] = endTimePart.split(":").map(Number);
+                        const now = new Date();
+                        const slotEndDatetime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), endH, endM, 0);
+                        slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
+                        const expireTimeStr = `${String(slotEndDatetime.getHours()).padStart(2, '0')}:${String(slotEndDatetime.getMinutes()).padStart(2, '0')}`;
+
+                        // 🔻 わかりやすい表現に変更しました
                         waitInfoHtml = `
-                            <p style="margin: 8px 0; font-size: 15px; color: #333;">
-                                あなたの前には <strong>${aheadPeople} 人</strong> お待ちです<br>
-                                およその待ち時間: <strong>約 ${estimatedMinutes} 分</strong>
+                            <p style="margin: 8px 0; font-size: 14px; color: #d9534f; font-weight: bold;">
+                                ⚠️ ${expireTimeStr}を過ぎると自動キャンセルされますのでご注意ください
                             </p>
                         `;
-                    }
-
-                    let callNoticeHtml = "";
-                    if (ticketStatus === "called") {
-                        callNoticeHtml = `
-                            <div style="background: #fff3cd; border: 2px solid #ffeba2; padding: 12px; border-radius: 8px; margin: 10px 0; text-align: center;">
-                                <p style="font-size: 18px; font-weight: bold; color: #856404; margin: 0 0 5px 0;">📢 お店から呼び出されました！</p>
-                                <p style="font-size: 15px; font-weight: bold; color: #d9534f; margin: 0;">
-                                    順番になりました！<strong>${autoExpireMinutes}分以内</strong>にお越しください。
-                                </p>
-                                <div id="countdown-display" style="font-size: 22px; font-weight: bold; color: #dc3545; margin-top: 8px; background: #fff; padding: 6px; border-radius: 6px; border: 1px solid #ffc107;">
-                                    残り時間: 計算中...
-                                </div>
-                                <p style="font-size: 11px; color: #856404; margin: 5px 0 0 0;">※時間が過ぎると自動的にキャンセルとなります。</p>
-                            </div>
-                        `;
-
-                        if (ticketData.calledAt) {
-                            const calledTimeMs = ticketData.calledAt.toDate ? ticketData.calledAt.toDate().getTime() : new Date(ticketData.calledAt).getTime();
-                            const expireTimeMs = calledTimeMs + (autoExpireMinutes * 60 * 1000);
-
-                            if (countdownInterval) clearInterval(countdownInterval);
-
-                            countdownInterval = setInterval(async () => {
-                                const nowMs = Date.now();
-                                const remainMs = expireTimeMs - nowMs;
-                                const countEl = document.getElementById("countdown-display");
-
-                                if (remainMs <= 0) {
-                                    clearInterval(countdownInterval);
-                                    if (countEl) countEl.innerHTML = "⏳ 時間切れ（自動キャンセル中...）";
-                                    await updateDoc(doc(db, "queues", activeTicketDoc.id), { 
-                                        status: "expired",
-                                        cancelledAt: serverTimestamp()
-                                    });
-                                    loadShops();
-                                } else {
-                                    const rMin = Math.floor(remainMs / (1000 * 60));
-                                    const rSec = Math.floor((remainMs % (1000 * 60)) / 1000);
-                                    if (countEl) {
-                                        countEl.innerHTML = `⏱️ 残り時間: <strong>${rMin}分${rSec.toString().padStart(2, '0')}秒</strong>`;
-                                    }
-                                }
-                            }, 1000);
-                        }
                     }
 
                     let cancelOptionsHtml = `<option value="all">全額・全件キャンセル (${currentSize}人分)</option>`;
@@ -311,21 +306,16 @@ async function loadShops() {
                     }
 
                     myTicketHtml = `
-                        <div class="ticket-box" style="background: ${ticketStatus === 'called' ? '#fff9e6' : '#e6f9e6'}; border: 2px dashed ${ticketStatus === 'called' ? '#ffc107' : '#00c300'}; padding: 15px; border-radius: 8px; margin-top: 15px; text-align: center;">
+                        <div class="ticket-box" style="background: #e6f9e6; border: 2px dashed #00c300; padding: 15px; border-radius: 8px; margin-top: 15px; text-align: center;">
                             <h3>🎫 あなたの予約チケット</h3>
-                            <p style="font-size: 24px; font-weight: bold; color: ${ticketStatus === 'called' ? '#b78103' : '#008000'}; margin: 5px 0;">${activeTicketDoc.id.slice(-4).toUpperCase()}</p>
+                            <p style="font-size: 24px; font-weight: bold; color: #008000; margin: 5px 0;">ID: ${activeTicketDoc.id.slice(-4).toUpperCase()}</p>
                             <p>ステータス: <strong>${ticketStatus === 'called' ? '📢 お呼び出し中' : (ticketStatus === 'reserved' ? '予約完了' : '順番待ち中')} ${typeText} (${currentSize}人)</strong></p>
                             
-                            ${callNoticeHtml}
                             ${waitInfoHtml}
-                            
-                            <div style="background: #fff; padding: 10px; display: inline-block; border-radius: 6px; margin: 10px 0; border: 1px solid #ccc;">
-                                <div id="qrcode-${shopId}" style="display: flex; justify-content: center;"></div>
-                            </div>
 
-                            <div style="background: #fff; border: 1px solid #17a2b8; padding: 10px; border-radius: 6px; margin: 12px 0; text-align: left;">
-                                <p style="margin: 0; color: #0056b3; font-weight: bold; font-size: 13px;">📸 【重要なお願い】</p>
-                                <p style="margin: 4px 0 0 0; font-size: 13px; color: #333;">念のため、この画面のスクリーンショットを保存しておいてください。</p>
+                            <div style="background: #fff; padding: 15px; display: inline-block; border-radius: 8px; margin: 10px 0; border: 1px solid #ccc; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                                <div id="fresh-qrcode-${shopId}" style="display: flex; justify-content: center;"></div>
+                                <p style="font-size: 11px; color: #666; margin: 8px 0 0 0;">スタッフにこのQRコードをご提示ください</p>
                             </div>
 
                             <div style="margin-top: 15px; border-top: 1px solid #ddd; padding-top: 10px;">
@@ -397,7 +387,7 @@ async function loadShops() {
                     ${dateTabsHtml}
 
                     <div class="slot-container" id="slots-${shopId}" style="display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0;">
-                        ${slotButtonsHtml}
+                        ${slotButtonsHtml || '<p style="font-size:13px; color:#666;">現在受付中の時間枠はありません。</p>'}
                     </div>
                     <button id="time-btn-${shopId}" style="background: #6c757d; color:white; border:none; padding:10px; border-radius:5px; width:100%; cursor:pointer;" disabled>時間枠を選んで予約 (${activeDate})</button>
                 `;
@@ -406,16 +396,23 @@ async function loadShops() {
 
                 if (isAlreadyBooked) {
                     setTimeout(() => {
-                        const qrContainer = document.getElementById(`qrcode-${shopId}`);
+                        const qrContainer = document.getElementById(`fresh-qrcode-${shopId}`);
                         if (qrContainer && activeTicketDoc) {
                             qrContainer.innerHTML = "";
-                            new QRCode(qrContainer, {
-                                text: activeTicketDoc.id,
-                                width: 128,
-                                height: 128
-                            });
+                            try {
+                                new QRCode(qrContainer, {
+                                    text: activeTicketDoc.id,
+                                    width: 140,
+                                    height: 140,
+                                    colorDark: "#000000",
+                                    colorLight: "#ffffff",
+                                    correctLevel: QRCode.CorrectLevel.M
+                                });
+                            } catch (err) {
+                                console.error("QRコード生成エラー:", err);
+                            }
                         }
-                    }, 50);
+                    }, 100);
                 }
 
                 card.querySelectorAll(".user-date-tab").forEach(tabBtn => {
@@ -536,6 +533,18 @@ async function loadShops() {
             }
         }
 
+        customerCountdownInterval = setInterval(() => {
+            const countdownEls = document.querySelectorAll(".customer-countdown");
+            countdownEls.forEach(el => {
+                const deadline = parseInt(el.getAttribute("data-deadline"), 10);
+                const remainingMs = deadline - Date.now();
+                const remainingSec = Math.max(0, Math.floor(remainingMs / 1000));
+                const remMin = Math.floor(remainingSec / 60);
+                const remSec = remainingSec % 60;
+                el.innerText = `自動キャンセルまで: ${remMin}分${String(remSec).padStart(2, '0')}秒`;
+            });
+        }, 1000);
+
         container.querySelectorAll(".user-nav-tab").forEach(navBtn => {
             navBtn.addEventListener("click", (e) => {
                 userTab = e.target.getAttribute("data-tab");
@@ -579,10 +588,3 @@ onSnapshot(collection(db, "queues"), () => {
     });
     updateLastRefreshTime();
 });
-
-setInterval(() => {
-    checkCustomerAuth().then(authed => {
-        if (authed) loadShops();
-    });
-    updateLastRefreshTime();
-}, 30000);
