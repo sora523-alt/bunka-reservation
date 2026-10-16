@@ -134,7 +134,14 @@ let selectedShopId = null;
 let html5QrCode = null;
 let isInitialLoaded = false;
 let countdownTimerInterval = null;
-let searchQuery = ""; // 🔍 検索クエリ保持用
+let searchQuery = "";
+
+// ⏰ 30秒ごとの自動更新タイマー設定
+setInterval(() => {
+    checkStaffAuth().then(authed => {
+        if (authed) loadStaffView(true);
+    });
+}, 30000);
 
 async function loadStaffView(isBackground = false) {
     const isAuth = await checkStaffAuth();
@@ -195,8 +202,42 @@ async function loadStaffView(isBackground = false) {
 
         const [waitingSnap, reservedSnap] = await Promise.all([getDocs(qWaiting), getDocs(qReserved)]);
 
+        const nowTime = new Date();
+
+        // 🔄 自動キャンセル判定の実行（Settingsの時間と連動）
+        for (const docSnap of waitingSnap.docs) {
+            const qData = docSnap.data();
+            if (qData.status === "called" && qData.calledAt) {
+                const calledTime = typeof qData.calledAt.toMillis === 'function' ? qData.calledAt.toMillis() : new Date(qData.calledAt).getTime();
+                const expireMs = autoExpireMinutes * 60 * 1000;
+                if (nowTime.getTime() > calledTime + expireMs) {
+                    await updateDoc(doc(db, "queues", docSnap.id), { status: "expired" });
+                }
+            }
+        }
+
+        for (const docSnap of reservedSnap.docs) {
+            const qData = docSnap.data();
+            if (qData.type === "timeslot" && qData.timeSlot && qData.timeSlot.includes("-")) {
+                const endTimePart = qData.timeSlot.split("-")[1].trim();
+                const [endH, endM] = endTimePart.split(":").map(Number);
+                const slotEndDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), endH, endM, 0);
+                slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
+
+                if (nowTime > slotEndDatetime) {
+                    await updateDoc(doc(db, "queues", docSnap.id), { status: "expired" });
+                }
+            }
+        }
+
+        // 再取得
+        const [waitingSnap2, reservedSnap2] = await Promise.all([
+            getDocs(query(collection(db, "queues"), where("shopId", "==", selectedShopId), where("status", "in", ["waiting", "called"]))),
+            getDocs(query(collection(db, "queues"), where("shopId", "==", selectedShopId), where("status", "==", "reserved")))
+        ]);
+
         const waitingDocs = [];
-        waitingSnap.forEach(doc => waitingDocs.push({ id: doc.id, ...doc.data() }));
+        waitingSnap2.forEach(doc => waitingDocs.push({ id: doc.id, ...doc.data() }));
         waitingDocs.sort((a, b) => {
             const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
             const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
@@ -204,14 +245,13 @@ async function loadStaffView(isBackground = false) {
         });
 
         const reservedDocs = [];
-        reservedSnap.forEach(doc => reservedDocs.push({ id: doc.id, ...doc.data() }));
+        reservedSnap2.forEach(doc => reservedDocs.push({ id: doc.id, ...doc.data() }));
         reservedDocs.sort((a, b) => {
             const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
             const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
             return timeA - timeB;
         });
 
-        // 🔍 検索フィルター適用関数（部分一致・大文字小文字無視）
         const filterBySearch = (docs) => {
             if (!searchQuery.trim()) return docs;
             const q = searchQuery.trim().toLowerCase();
@@ -223,23 +263,23 @@ async function loadStaffView(isBackground = false) {
         if (currentTab === 'waiting') {
             const filteredWaitingDocs = filterBySearch(waitingDocs);
             let waitingListHtml = "";
-            let accumulatedPeopleBefore = 0;
-
-            waitingDocs.forEach((qData) => {
-                if (!qData.status || qData.status === "waiting") {
-                    accumulatedPeopleBefore += (qData.partySize || 1);
-                }
-            });
 
             filteredWaitingDocs.forEach((qData, index) => {
                 const qId = qData.id;
                 const partySize = qData.partySize || 1;
-                const partySizeText = ` (${partySize}人)`;
+                const partySizeText = ` (${partySize}名)`;
                 const createdTimeStr = formatTimestamp(qData.createdAt);
                 const isCalled = qData.status === "called";
                 const isManualStaff = qData.isStaffIssued === true;
 
-                const slotIndex = Math.floor(index / standardGroupSize);
+                let aheadPeople = 0;
+                for (let i = 0; i < waitingDocs.length; i++) {
+                    if (waitingDocs[i].id === qId) break;
+                    if (!waitingDocs[i].status || waitingDocs[i].status === "waiting" || waitingDocs[i].status === "called") {
+                        aheadPeople += (waitingDocs[i].partySize || 1);
+                    }
+                }
+                const slotIndex = Math.floor(aheadPeople / standardGroupSize);
                 const estimatedMinutes = slotIndex * minutesPerGroup;
 
                 let waitTimeBadge = "";
@@ -287,7 +327,6 @@ async function loadStaffView(isBackground = false) {
 
             tabContentHtml = `
                 <div style="background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ccc;">
-                    <!-- 🔍 検索バー -->
                     <div style="margin-bottom: 15px; display: flex; gap: 8px;">
                         <input type="text" id="staff-search-input" placeholder="🔍 ID（例: ABCD または下4桁）で検索" value="${searchQuery}" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;">
                         <button id="staff-search-clear" style="padding: 10px 15px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">クリア</button>
@@ -299,11 +338,11 @@ async function loadStaffView(isBackground = false) {
                             <div>
                                 <label style="font-size: 13px; font-weight: bold;">人数:</label>
                                 <select id="manual-party-size" style="padding: 6px; margin-left: 5px;">
-                                    <option value="1">1人</option>
-                                    <option value="2" selected>2人</option>
-                                    <option value="3">3人</option>
-                                    <option value="4">4人</option>
-                                    <option value="5">5人以上</option>
+                                    <option value="1">1名</option>
+                                    <option value="2" selected>2名</option>
+                                    <option value="3">3名</option>
+                                    <option value="4">4名</option>
+                                    <option value="5">5名以上</option>
                                 </select>
                             </div>
                             <button id="manual-issue-btn" style="background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; font-weight: bold; cursor: pointer;">＋ 手動で順番待ちを発行する</button>
@@ -332,15 +371,14 @@ async function loadStaffView(isBackground = false) {
             
             filteredReservedDocs.forEach((qData) => {
                 const qId = qData.id;
-                const partySizeText = qData.partySize ? ` (${qData.partySize}人)` : " (1人)";
+                const partySizeText = qData.partySize ? ` (${qData.partySize}名)` : " (1名)";
                 const createdTimeStr = formatTimestamp(qData.createdAt);
                 
                 let expireWarningHtml = "";
                 if (qData.timeSlot && qData.timeSlot.includes("-")) {
                     const endTimePart = qData.timeSlot.split("-")[1].trim();
                     const [endH, endM] = endTimePart.split(":").map(Number);
-                    const now = new Date();
-                    const slotEndDatetime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), endH, endM, 0);
+                    const slotEndDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), endH, endM, 0);
                     slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
                     
                     const expireTimeStr = `${String(slotEndDatetime.getHours()).padStart(2, '0')}:${String(slotEndDatetime.getMinutes()).padStart(2, '0')}`;
@@ -363,7 +401,6 @@ async function loadStaffView(isBackground = false) {
 
             tabContentHtml = `
                 <div style="background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #ccc;">
-                    <!-- 🔍 検索バー -->
                     <div style="margin-bottom: 15px; display: flex; gap: 8px;">
                         <input type="text" id="staff-search-input" placeholder="🔍 ID（例: ABCD または下4桁）で検索" value="${searchQuery}" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;">
                         <button id="staff-search-clear" style="padding: 10px 15px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">クリア</button>
@@ -386,7 +423,6 @@ async function loadStaffView(isBackground = false) {
                         🔍 カメラを起動中...
                     </div>
 
-                    <!-- 🔍 テキスト検索フォールバック（英数字4桁〜部分一致対応） -->
                     <div style="margin-top: 25px; padding-top: 20px; border-top: 1px dashed #ccc; text-align: left;">
                         <h4 style="margin: 0 0 8px 0; color: #333; font-size: 14px;">⌨️ カメラで読み取れない場合（ID検索）</h4>
                         <div style="display: flex; gap: 8px;">
@@ -422,14 +458,12 @@ async function loadStaffView(isBackground = false) {
         listContainer.innerHTML = "";
         listContainer.appendChild(mainCard);
 
-        // 🔍 リストタブでのリアルタイム検索イベント紐付け
         const searchInputEl = mainCard.querySelector("#staff-search-input");
         if (searchInputEl) {
             searchInputEl.addEventListener("input", (e) => {
                 searchQuery = e.target.value;
-                loadStaffView(true); // バックグラウンド再描画でスムーズに入力維持
+                loadStaffView(true);
             });
-            // フォーカスを維持して末尾にカーソルを置く
             setTimeout(() => {
                 const el = document.getElementById("staff-search-input");
                 if (el) {
@@ -447,7 +481,6 @@ async function loadStaffView(isBackground = false) {
             });
         }
 
-        // 🔍 スキャナー画面の手動ID検索イベント紐付け
         const scannerManualBtn = mainCard.querySelector("#scanner-manual-search-btn");
         const scannerManualInput = mainCard.querySelector("#scanner-manual-input");
         if (scannerManualBtn && scannerManualInput) {
@@ -458,7 +491,6 @@ async function loadStaffView(isBackground = false) {
                     return;
                 }
 
-                // 全キューから部分一致するものを検索
                 const allQueuesSnap = await getDocs(query(collection(db, "queues"), where("shopId", "==", selectedShopId)));
                 let matchedDocId = null;
 
@@ -499,14 +531,14 @@ async function loadStaffView(isBackground = false) {
         mainCard.querySelectorAll(".shop-select-tab").forEach(btn => {
             btn.addEventListener("click", (e) => { 
                 selectedShopId = e.target.getAttribute("data-shopid"); 
-                searchQuery = ""; // 店舗切り替え時は検索クリア
+                searchQuery = ""; 
                 loadStaffView(false); 
             });
         });
         mainCard.querySelectorAll(".nav-tab-btn").forEach(btn => {
             btn.addEventListener("click", (e) => { 
                 currentTab = e.target.getAttribute("data-tab"); 
-                searchQuery = ""; // タブ切り替え時は検索クリア
+                searchQuery = ""; 
                 loadStaffView(false); 
             });
         });
@@ -689,7 +721,7 @@ async function handleFreshScannedTicket(ticketId) {
                 <div style="background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; border-radius: 8px; margin: 15px 0; text-align: left;">
                     <p style="margin: 4px 0; font-size: 16px;">予約ID: <strong>${idShort}</strong></p>
                     <p style="margin: 4px 0; font-size: 16px;">種類: <strong>${typeText}</strong></p>
-                    <p style="margin: 4px 0; font-size: 16px;">人数: <strong>${partySize} 人</strong></p>
+                    <p style="margin: 4px 0; font-size: 16px;">人数: <strong>${partySize} 名</strong></p>
                 </div>
                 <button id="fresh-modal-close" style="background: #007bff; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 10px;">確認（閉じる）</button>
             `;
@@ -707,7 +739,7 @@ async function handleFreshScannedTicket(ticketId) {
             <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 18px; border-radius: 8px; margin: 15px 0; text-align: left;">
                 <p style="margin: 6px 0; font-size: 18px;">受付ID: <strong style="color: #d9534f; font-size: 22px;">${idShort}</strong></p>
                 <p style="margin: 6px 0; font-size: 18px;">種類: <strong>${typeText}</strong></p>
-                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 人</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 名</strong></p>
                 <p style="margin: 6px 0; font-size: 18px;">現在の状態: <strong>${statusText}</strong></p>
             </div>
             
@@ -723,7 +755,7 @@ async function handleFreshScannedTicket(ticketId) {
         modalOverlay.style.display = "flex";
 
         document.getElementById("fresh-accept-btn").onclick = async () => {
-            if (confirm(`【確認】本当にこのお客様（ID: ${idShort} / ${partySize}人）の受付を完了にしますか？`)) {
+            if (confirm(`【確認】本当にこのお客様（ID: ${idShort} / ${partySize}名）の受付を完了にしますか？`)) {
                 const acceptBtn = document.getElementById("fresh-accept-btn");
                 acceptBtn.disabled = true;
                 acceptBtn.innerText = "処理中...";
@@ -736,7 +768,7 @@ async function handleFreshScannedTicket(ticketId) {
 
                     modalContent.innerHTML = `
                         <h2 style="color: #2e7d32; margin-top: 0;">🎉 受付完了しました！</h2>
-                        <p style="font-size: 18px; margin: 10px 0;">ID: <strong>${idShort}</strong> (${partySize}人)</p>
+                        <p style="font-size: 18px; margin: 10px 0;">ID: <strong>${idShort}</strong> (${partySize}名)</p>
                         <p style="color: #666; font-size: 14px;">正常に来場・受付処理が完了しました。</p>
                         <button id="fresh-success-ok" style="background: #28a745; color: white; border: none; padding: 12px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 15px;">OK（次へ進む）</button>
                     `;
@@ -826,7 +858,7 @@ async function handleManualIssuedTicket(ticketId) {
         let aheadPeople = 0;
         for (let i = 0; i < waitingDocs.length; i++) {
             if (waitingDocs[i].id === ticketId) break;
-            if (waitingDocs[i].status === "waiting") {
+            if (!waitingDocs[i].status || waitingDocs[i].status === "waiting" || waitingDocs[i].status === "called") {
                 aheadPeople += (waitingDocs[i].partySize || 1);
             }
         }
@@ -841,10 +873,10 @@ async function handleManualIssuedTicket(ticketId) {
             <div style="background: #e3f2fd; border: 2px solid #2196f3; padding: 18px; border-radius: 8px; margin: 15px 0; text-align: left;">
                 <p style="margin: 6px 0; font-size: 18px;">受付ID: <strong style="color: #d9534f; font-size: 22px;">${idShort}</strong></p>
                 <p style="margin: 6px 0; font-size: 18px;">種類: <strong>紙の整理券（手動発券）</strong></p>
-                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 人</strong></p>
+                <p style="margin: 6px 0; font-size: 18px;">人数: <strong>${partySize} 名</strong></p>
                 
                 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #90caf9; font-size: 16px; color: #0d47a1;">
-                    前のお待ち人数: <strong>${aheadPeople} 人</strong><br>
+                    前のお待ち人数: <strong>${aheadPeople} 名</strong><br>
                     およその待ち時間: <strong>約 ${estimatedMinutes} 分</strong>
                 </div>
             </div>

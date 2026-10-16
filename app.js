@@ -105,6 +105,13 @@ let userTab = 'shops';
 let userSelectedDates = {};
 let customerCountdownInterval = null;
 
+// ⏰ 30秒ごとの自動更新タイマー設定（お客様用）
+setInterval(() => {
+    checkCustomerAuth().then(authed => {
+        if (authed) loadShops();
+    });
+}, 30000);
+
 async function loadShops() {
     const isAuth = await checkCustomerAuth();
     if (!isAuth) return;
@@ -203,6 +210,7 @@ async function loadShops() {
                 const minutesPerGroup = data.minutesPerGroup !== undefined ? data.minutesPerGroup : 10;
                 const autoExpireMinutes = data.autoExpireMinutes !== undefined ? data.autoExpireMinutes : 1;
                 const timeslotExpireMinutes = data.timeslotExpireMinutes !== undefined ? data.timeslotExpireMinutes : 10;
+                const closeBeforeMinutes = data.closeBeforeMinutes !== undefined ? data.closeBeforeMinutes : 0;
                 const isQueueStopped = data.isQueueStopped === true;
 
                 const dateSlotsMap = data.dateSlots || {
@@ -283,14 +291,14 @@ async function loadShops() {
                             `;
                         }
                     } else if (ticketData.type === "timeslot" && ticketData.timeSlot) {
-                        const endTimePart = ticketData.timeSlot.split("-")[1].trim();
+                        const parts = ticketData.timeSlot.split("-");
+                        const endTimePart = parts.length > 1 ? parts[1].trim() : ticketData.timeSlot.trim();
                         const [endH, endM] = endTimePart.split(":").map(Number);
                         const now = new Date();
-                        const slotEndDatetime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), endH, endM, 0);
+                        const slotEndDatetime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), endH || 0, endM || 0, 0);
                         slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
                         const expireTimeStr = `${String(slotEndDatetime.getHours()).padStart(2, '0')}:${String(slotEndDatetime.getMinutes()).padStart(2, '0')}`;
 
-                        // 🔻 わかりやすい表現に変更しました
                         waitInfoHtml = `
                             <p style="margin: 8px 0; font-size: 14px; color: #d9534f; font-weight: bold;">
                                 ⚠️ ${expireTimeStr}を過ぎると自動キャンセルされますのでご注意ください
@@ -298,7 +306,7 @@ async function loadShops() {
                         `;
                     }
 
-                    let cancelOptionsHtml = `<option value="all">全額・全件キャンセル (${currentSize}人分)</option>`;
+                    let cancelOptionsHtml = `<option value="all">全員キャンセル (${currentSize}人分)</option>`;
                     if (currentSize > 1) {
                         for (let i = 1; i < currentSize; i++) {
                             cancelOptionsHtml += `<option value="${i}">${i}人分だけキャンセル（${currentSize - i}人に変更）</option>`;
@@ -334,7 +342,21 @@ async function loadShops() {
                 const [reservedSnap, completedSnap] = await Promise.all([getDocs(slotQueryReserved), getDocs(slotQueryCompleted)]);
 
                 let slotButtonsHtml = "";
+                const nowTime = new Date();
+                const isTodayActive = (activeDate === todayStr);
+
                 for (const [time, limit] of Object.entries(timeSlots)) {
+                    if (isTodayActive && time.includes("-")) {
+                        const startTimePart = time.split("-")[0].trim();
+                        const [startH, startM] = startTimePart.split(":").map(Number);
+                        const slotStartDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), startH, startM, 0);
+                        slotStartDatetime.setMinutes(slotStartDatetime.getMinutes() - closeBeforeMinutes);
+
+                        if (nowTime >= slotStartDatetime) {
+                            continue;
+                        }
+                    }
+
                     let slotConsumedCount = 0;
                     reservedSnap.forEach(sDoc => {
                         if (sDoc.data().date === activeDate && sDoc.data().timeSlot === time) slotConsumedCount += (sDoc.data().partySize || 1);
@@ -453,7 +475,7 @@ async function loadShops() {
                         const currentPartySize = activeTicketDoc.data().partySize || 1;
 
                         if (cancelVal === "all") {
-                            if (confirm("本当に予約を全額キャンセルしますか？")) {
+                            if (confirm("本当に全員キャンセルしますか？")) {
                                 await updateDoc(doc(db, "queues", activeTicketDoc.id), { 
                                     status: "cancelled",
                                     cancelledAt: serverTimestamp()
