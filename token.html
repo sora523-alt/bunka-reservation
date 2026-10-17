@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>【スタッフ用】管理トークン＆セッション管理</title>
+    <title>【スタッフ用】管理トークン＆管理画面</title>
     <style>
         body { font-family: sans-serif; padding: 20px; background: #f0f2f5; max-width: 600px; margin: auto; }
         .card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); text-align: center; }
@@ -17,10 +17,15 @@
         .danger-btn { background: #dc3545; padding: 6px 12px; font-size: 12px; }
         .danger-btn:hover { background: #bd2130; }
 
+        /* 🗂️ 画面切り替えタブのスタイル */
+        .nav-tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .nav-tab-btn { flex: 1; padding: 12px; font-size: 15px; border-radius: 8px; border: none; font-weight: bold; cursor: pointer; background: #e0e0e0; color: #333; }
+        .nav-tab-btn.active { background: #0056b3; color: white; }
+
         /* 🔒 認証オーバーレイ */
         #token-auth-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: #111111; display: flex; justify-content: center; align-items: center; z-index: 9999;
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: #111111; display: flex; justify-content: center; align-items: center; z-index: 999999;
         }
         .auth-box {
             background: white; padding: 30px; border-radius: 12px; width: 90%; max-width: 400px; text-align: center;
@@ -43,32 +48,126 @@
     </div>
 </div>
 
-<div class="card">
-    <h1>🔐 スタッフ管理トークン</h1>
-    <p class="info">管理画面のログインに必要な5分更新のパスコードです。</p>
-    
-    <div id="token-box" class="token-display">------</div>
-    <div id="countdown-timer" class="timer">次のコードまで: --:--</div>
-    
-    <a href="./staff.html"><button style="width: 100%; margin-top: 10px;">スタッフ管理画面へ移動</button></a>
+<!-- 🗂️ 画面を切り替えるためのタブボタン -->
+<div class="nav-tabs" id="app-nav-tabs" style="display: none;">
+    <button class="nav-tab-btn active" data-target="view-main">🔐 管理・トークン画面</button>
+    <button class="nav-tab-btn" data-target="view-logs">📋 端末一覧・操作ログ</button>
 </div>
 
-<!-- 🔑 お客様用パスワードの設定カード -->
-<div class="card" style="text-align: left;">
-    <h1>🔑 お客様用ページパスワード設定</h1>
-    <p class="info" style="margin-bottom: 15px;">来場者や生徒が予約画面を開くときに入力する合言葉を変更できます。</p>
-    <div style="display: flex; gap: 10px;">
-        <input type="text" id="customer-pass-input" placeholder="新しいパスワード" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px;">
-        <button id="save-customer-pass-btn" style="background: #28a745;">パスワード変更</button>
+<!-- ================= 📄 ページ1：管理・トークン画面 ================= -->
+<div id="view-main" class="page-view" style="display: none;">
+    <div class="card">
+        <h1>🔐 スタッフ管理トークン</h1>
+        <p class="info">管理画面のログインに必要な5分更新のパスコードです。</p>
+        
+        <div id="token-box" class="token-display">------</div>
+        <div id="countdown-timer" class="timer">次のコードまで: --:--</div>
+        
+        <a href="./staff.html"><button style="width: 100%; margin-top: 10px;">スタッフ管理画面へ移動</button></a>
+    </div>
+
+    <!-- 🔑 お客様用パスワードの設定カード -->
+    <div class="card" style="text-align: left;">
+        <h1>🔑 お客様用ページパスワード設定</h1>
+        <p class="info" style="margin-bottom: 15px;">来場者や生徒が予約画面を開くときに入力する合言葉を変更できます。</p>
+        <div style="display: flex; gap: 10px;">
+            <input type="text" id="customer-pass-input" placeholder="新しいパスワード" style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px;">
+            <button id="save-customer-pass-btn" style="background: #28a745;">パスワード変更</button>
+        </div>
+    </div>
+
+    <!-- 🗑️ 履歴データリセット専用カード -->
+    <div class="card" style="text-align: left;">
+        <h1>🗑️ 履歴データの一括リセット</h1>
+        <p class="info" style="margin-bottom: 15px;">過去の受付完了履歴やキャンセル履歴を店舗ごとに削除できます。</p>
+        <div id="reset-shops-container">読み込み中...</div>
     </div>
 </div>
 
-<div class="card" style="text-align: left;">
-    <h1>📱 ログイン中端末の管理</h1>
-    <p class="info" style="margin-bottom: 15px;">現在アクセスしているスタッフ端末の状況です。不審な端末は強制ログアウトできます。</p>
-    <div id="device-list-container">読み込み中...</div>
+<!-- ================= 📋 ページ2：端末一覧・操作ログ画面 ================= -->
+<div id="view-logs" class="page-view" style="display: none;">
+    <!-- 📱 お客様の端末一覧 -->
+    <div class="card" style="text-align: left;">
+        <h1>👥 お客様の端末一覧</h1>
+        <p class="info" style="margin-bottom: 15px;">お客様の端末固有番号（UUID）の履歴です。</p>
+        <div id="customer-device-list-container">読み込み中...</div>
+    </div>
+
+    <!-- 📱 スタッフの端末一覧＆ロック制御 -->
+    <div class="card" style="text-align: left;">
+        <h1>📱 スタッフ端末一覧（操作ロック制御）</h1>
+        <p class="info" style="margin-bottom: 15px;">スタッフ端末をタップすると、画面をロックできます。</p>
+        <div id="device-list-container">読み込み中...</div>
+    </div>
+
+    <!-- 👷 スタッフ用操作ログ -->
+    <div class="card" style="text-align: left;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <h1 style="margin: 0;">👷 スタッフ用操作ログ</h1>
+                <p class="info" style="margin: 4px 0 0 0;">スタッフ端末によるログイン、設定変更、受付操作の履歴です。</p>
+            </div>
+            <button id="reset-staff-logs-btn" class="danger-btn" style="padding: 8px 12px; font-size: 13px;">🗑️ スタッフログをリセット</button>
+        </div>
+        <div id="staff-action-log-container" style="max-height: 300px; overflow-y: auto; font-size: 12px; background: #f8f9fa; padding: 10px; border-radius: 6px; border: 1px solid #ddd;">読み込み中...</div>
+    </div>
+
+    <!-- 👤 お客様用操作ログ -->
+    <div class="card" style="text-align: left;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <h1 style="margin: 0;">👤 お客様用操作ログ</h1>
+                <p class="info" style="margin: 4px 0 0 0;">お客様端末による順番待ち受付や時間予約、キャンセルの履歴です。</p>
+            </div>
+            <button id="reset-customer-logs-btn" class="danger-btn" style="padding: 8px 12px; font-size: 13px;">🗑️ お客様ログをリセット</button>
+        </div>
+        <div id="customer-action-log-container" style="max-height: 300px; overflow-y: auto; font-size: 12px; background: #f8f9fa; padding: 10px; border-radius: 6px; border: 1px solid #ddd;">読み込み中...</div>
+    </div>
 </div>
 
 <script type="module" src="token.js"></script>
+<script type="module">
+    // 🛡️ Safariの機能による認証画面の削除・隠蔽を完全防止し、未認証時は中身を隠し続ける監視処理
+    function enforceTokenAuth() {
+        const isAuthed = localStorage.getItem("token_authenticated");
+        const overlay = document.getElementById("token-auth-overlay");
+        const navTabs = document.getElementById("app-nav-tabs");
+        const viewMain = document.getElementById("view-main");
+        const viewLogs = document.getElementById("view-logs");
+
+        if (isAuthed === "true") {
+            if (overlay) overlay.style.display = "none";
+            if (navTabs) navTabs.style.display = "flex";
+            // どのタブがアクティブかに応じて表示を切り戻す
+            const activeTab = document.querySelector(".nav-tab-btn.active");
+            const targetId = activeTab ? activeTab.getAttribute("data-target") : "view-main";
+            if (targetId === "view-main") {
+                if (viewMain) viewMain.style.display = "block";
+                if (viewLogs) viewLogs.style.display = "none";
+            } else {
+                if (viewMain) viewMain.style.display = "none";
+                if (viewLogs) viewLogs.style.display = "block";
+            }
+        } else {
+            if (overlay) overlay.style.display = "flex";
+            if (navTabs) navTabs.style.display = "none";
+            if (viewMain) viewMain.style.display = "none";
+            if (viewLogs) viewLogs.style.display = "none";
+        }
+    }
+
+    const observer = new MutationObserver(() => {
+        enforceTokenAuth();
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class']
+    });
+
+    setInterval(enforceTokenAuth, 500);
+</script>
 </body>
 </html>

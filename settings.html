@@ -39,16 +39,96 @@
     </div>
 </div>
 
-<div class="nav-bar">
+<div class="nav-bar" id="app-nav-bar">
     <a href="./staff.html"><button style="background: #007bff;">≪ 現在の管理・運営に戻る</button></a>
-    <a href="./history.html"><button style="background: #6c757d;">過去の履歴・リセット画面へ ≫</button></a>
+    <a href="./history.html"><button style="background: #6c757d;">過去の履歴へ ≫</button></a>
 </div>
 
-<h1>【スタッフ用】店舗・タイムスロット設定</h1>
+<h1 id="app-title">【スタッフ用】店舗・タイムスロット設定</h1>
 <div id="last-updated" class="refresh-info">最終更新: --:--:--</div>
 
 <div id="settings-container">読み込み中...</div>
 
 <script type="module" src="settings.js"></script>
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    
+    const firebaseConfig = {
+      apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
+      authDomain: "reservation-system-5dcbd.firebaseapp.com",
+      projectId: "reservation-system-5dcbd",
+      storageBucket: "reservation-system-5dcbd.firebasestorage.app",
+      messagingSenderId: "601621223185",
+      appId: "1:601621223185:web:87cf014b94bf08...",
+      measurementId: "G-KL7VR03336"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // 🛡️ Safariの機能等による設定画面の要素削除やロックすり抜けを防ぎ、全要素とロック画面を完全入れ替え
+    async function enforceLockState() {
+        const sid = localStorage.getItem("staff_session_uuid");
+        if (!sid) return;
+
+        try {
+            const docSnap = await getDoc(doc(db, "staff_sessions", sid));
+            const navBar = document.getElementById("app-nav-bar");
+            const appTitle = document.getElementById("app-title");
+            const lastUpdated = document.getElementById("last-updated");
+            const settingsContainer = document.getElementById("settings-container");
+
+            if (docSnap.exists() && docSnap.data().isLocked === true) {
+                // ロック中のときは通常の操作画面を非表示にする
+                if (navBar) navBar.style.display = "none";
+                if (appTitle) appTitle.style.display = "none";
+                if (lastUpdated) lastUpdated.style.display = "none";
+                if (settingsContainer) settingsContainer.style.display = "none";
+
+                let lockDiv = document.getElementById("staff-orange-lock-overlay");
+                if (!lockDiv) {
+                    lockDiv = document.createElement("div");
+                    lockDiv.id = "staff-orange-lock-overlay";
+                    lockDiv.style.cssText = "position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: orange; z-index: 999999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; font-size: 32px; font-weight: bold; text-align: center; padding: 20px; box-sizing: border-box;";
+                    lockDiv.innerHTML = `
+                        <div>🔒 この端末は管理者によって一時的にロックされています</div>
+                        <div style="font-size: 16px; margin-top: 15px; font-weight: normal;">トークン管理画面から解除されるまで操作できません。</div>
+                    `;
+                    document.body.appendChild(lockDiv);
+                } else {
+                    lockDiv.style.display = "flex";
+                    lockDiv.style.visibility = "visible";
+                    lockDiv.style.opacity = "1";
+                }
+            } else {
+                // ロック解除時は通常画面を表示に戻す
+                if (navBar) navBar.style.display = "flex";
+                if (appTitle) appTitle.style.display = "block";
+                if (lastUpdated) lastUpdated.style.display = "block";
+                if (settingsContainer) settingsContainer.style.display = "block";
+
+                const lockDiv = document.getElementById("staff-orange-lock-overlay");
+                if (lockDiv) lockDiv.remove();
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    // DOM改変を常時監視
+    const observer = new MutationObserver(() => {
+        enforceLockState();
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class']
+    });
+
+    // 定期的にもチェックを実行
+    setInterval(enforceLockState, 1000);
+</script>
 </body>
 </html>

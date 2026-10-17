@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, getDocs, addDoc, updateDoc, doc, getDoc, serverTimestamp, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, addDoc, updateDoc, doc, getDoc, serverTimestamp, query, where, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
@@ -13,6 +13,30 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+function getDeviceUuid() {
+    let uuid = localStorage.getItem("device_uuid");
+    if (!uuid) {
+        uuid = 'user_' + Math.random().toString(36, 36) + Date.now().toString(36);
+        localStorage.setItem("device_uuid", uuid);
+    }
+    return uuid;
+}
+
+const deviceUuid = getDeviceUuid();
+
+async function logCustomerAction(action, details) {
+    try {
+        await addDoc(collection(db, "action_logs"), {
+            uuid: deviceUuid,
+            action: action,
+            details: details,
+            createdAt: serverTimestamp()
+        });
+    } catch (e) {
+        console.error("お客様ログ記録エラー", e);
+    }
+}
 
 async function checkCustomerAuth() {
     const overlay = document.getElementById("customer-auth-overlay");
@@ -65,6 +89,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (inputVal === serverPass) {
                     localStorage.setItem("customer_authenticated", "true");
                     localStorage.setItem("customer_authed_pass", serverPass);
+                    await logCustomerAction("お客様ログイン", `端末UUID: ${deviceUuid} がお客様画面にログインしました`);
                     document.getElementById("customer-auth-overlay").style.display = "none";
                     loadShops();
                 } else {
@@ -85,17 +110,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 });
 
-function getDeviceUuid() {
-    let uuid = localStorage.getItem("device_uuid");
-    if (!uuid) {
-        uuid = 'user_' + Math.random().toString(36, 36) + Date.now().toString(36);
-        localStorage.setItem("device_uuid", uuid);
-    }
-    return uuid;
-}
-
-const deviceUuid = getDeviceUuid();
-
 function getTodayDateString() {
     const now = new Date();
     return `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
@@ -104,15 +118,15 @@ function getTodayDateString() {
 let userTab = 'shops';
 let userSelectedDates = {};
 let customerCountdownInterval = null;
+let isInitialCustomerLoaded = false;
 
-// ⏰ 30秒ごとの自動更新タイマー設定（お客様用）
 setInterval(() => {
     checkCustomerAuth().then(authed => {
-        if (authed) loadShops();
+        if (authed) loadShops(true);
     });
 }, 30000);
 
-async function loadShops() {
+async function loadShops(isBackground = false) {
     const isAuth = await checkCustomerAuth();
     if (!isAuth) return;
 
@@ -121,24 +135,25 @@ async function loadShops() {
     
     const todayStr = getTodayDateString();
 
-    const headerNavHtml = `
-        <div style="background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 15px; text-align: center; font-weight: bold; color: #0d47a1;">
-            📅 本日の日付: ${todayStr}
-        </div>
-        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-            <button class="user-nav-tab" data-tab="shops" style="flex: 1; padding: 10px; background: ${userTab === 'shops' ? '#007bff' : '#e0e0e0'}; color: ${userTab === 'shops' ? 'white' : '#333'}; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
-                🏠 店舗・予約トップ
-            </button>
-            <button class="user-nav-tab" data-tab="history" style="flex: 1; padding: 10px; background: ${userTab === 'history' ? '#28a745' : '#e0e0e0'}; color: ${userTab === 'history' ? 'white' : '#333'}; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
-                📜 予約・利用履歴
-            </button>
-        </div>
-    `;
+    if (!isInitialCustomerLoaded || !document.getElementById("user-main-content")) {
+        const headerNavHtml = `
+            <div style="background: #e3f2fd; padding: 12px; border-radius: 8px; margin-bottom: 15px; text-align: center; font-weight: bold; color: #0d47a1;">
+                📅 本日の日付: ${todayStr}
+            </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                <button class="user-nav-tab" data-tab="shops" style="flex: 1; padding: 10px; background: ${userTab === 'shops' ? '#007bff' : '#e0e0e0'}; color: ${userTab === 'shops' ? 'white' : '#333'}; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
+                    🏠 店舗・予約トップ
+                </button>
+                <button class="user-nav-tab" data-tab="history" style="flex: 1; padding: 10px; background: ${userTab === 'history' ? '#28a745' : '#e0e0e0'}; color: ${userTab === 'history' ? 'white' : '#333'}; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
+                    📜 予約・利用履歴
+                </button>
+            </div>
+        `;
+        container.innerHTML = headerNavHtml + `<div id="user-main-content">読み込み中...</div>`;
+        isInitialCustomerLoaded = true;
+    }
 
-    container.innerHTML = headerNavHtml + `<div id="user-main-content">読み込み中...</div>`;
     const mainContent = document.getElementById("user-main-content");
-    mainContent.innerHTML = "";
-
     if (customerCountdownInterval) clearInterval(customerCountdownInterval);
 
     try {
@@ -148,13 +163,23 @@ async function loadShops() {
             const historyQuery = query(collection(db, "queues"), where("deviceUuid", "==", deviceUuid));
             const historySnap = await getDocs(historyQuery);
 
+            // 💡 取得した履歴ドキュメントを配列に変換し、新しいものが上（降順）になるようにソート
+            const historyDocs = [];
+            historySnap.forEach(hDoc => {
+                historyDocs.push({ id: hDoc.id, ...hDoc.data() });
+            });
+            historyDocs.sort((a, b) => {
+                const timeA = a.createdAt && typeof a.createdAt.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+                const timeB = b.createdAt && typeof b.createdAt.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+                return timeB - timeA; // 降順（新しい順）
+            });
+
             let activeTicketsHtml = "";
             let completedTicketsHtml = "";
             let cancelledTicketsHtml = "";
 
-            historySnap.forEach(hDoc => {
-                const data = hDoc.data();
-                const idShort = hDoc.id.slice(-4).toUpperCase();
+            historyDocs.forEach(data => {
+                const idShort = data.id.slice(-4).toUpperCase();
                 const typeName = data.type === "timeslot" ? `時間予約 (${data.date || ''} ${data.timeSlot})` : "当日順番待ち";
                 const sizeText = data.partySize ? ` / ${data.partySize}人` : "";
                 
@@ -201,6 +226,7 @@ async function loadShops() {
             `;
         } else {
             const querySnapshot = await getDocs(collection(db, "shops"));
+            mainContent.innerHTML = "";
             
             for (const docSnap of querySnapshot.docs) {
                 const data = docSnap.data();
@@ -268,7 +294,7 @@ async function loadShops() {
                             
                             waitInfoHtml = `
                                 <div style="margin: 10px 0; padding: 10px; background: #fff3cd; border: 1px solid #ffeeba; border-radius: 6px; color: #856404; font-weight: bold;">
-                                    📢 お呼び出しがかかりました！<br>
+                                    📢 順番になりました！<br>
                                     <span class="customer-countdown" data-deadline="${deadline}" style="font-size: 16px; color: #d9534f;">自動キャンセルまで: 計算中...</span>
                                 </div>
                             `;
@@ -299,11 +325,10 @@ async function loadShops() {
                         slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
                         const expireTimeStr = `${String(slotEndDatetime.getHours()).padStart(2, '0')}:${String(slotEndDatetime.getMinutes()).padStart(2, '0')}`;
 
-                        // 💡 修正：今日の日付の予約チケットである場合のみ、有効期限チェックの文言を表示
                         if (ticketData.date === todayStr) {
                             waitInfoHtml = `
                                 <p style="margin: 8px 0; font-size: 14px; color: #d9534f; font-weight: bold;">
-                                    ⚠️ ${expireTimeStr}を過ぎると自動キャンセルされますのでご注意ください
+                                    ⚠️ ${expireTimeStr}になると自動キャンセルされますのでご注意ください
                                 </p>
                             `;
                         } else {
@@ -362,18 +387,22 @@ async function loadShops() {
                 for (const [time, limit] of sortedTimeSlots) {
                     let isExpiredOrPassed = false;
 
-                    // 💡 修正：選択している日付が「今日」の場合のみ、過去の時間枠を非活性化する
                     if (activeDate === todayStr && time.includes("-")) {
+                        const startTimePart = time.split("-")[0].trim();
+                        const [startH, startM] = startTimePart.split(":").map(Number);
+                        
+                        const slotStartDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), startH, startM, 0);
+                        slotStartDatetime.setMinutes(slotStartDatetime.getMinutes() - closeBeforeMinutes);
+
                         const endTimePart = time.split("-")[1].trim();
                         const [endH, endM] = endTimePart.split(":").map(Number);
                         const slotEndDatetime = new Date(nowTime.getFullYear(), nowTime.getMonth(), nowTime.getDate(), endH, endM, 0);
                         slotEndDatetime.setMinutes(slotEndDatetime.getMinutes() + timeslotExpireMinutes);
 
-                        if (nowTime > slotEndDatetime) {
+                        if (nowTime >= slotStartDatetime) {
                             isExpiredOrPassed = true;
                         }
                     } else if (activeDate < todayStr) {
-                        // 過去の日付なら選択不可
                         isExpiredOrPassed = true;
                     }
 
@@ -409,9 +438,14 @@ async function loadShops() {
                 });
                 dateTabsHtml += `</div>`;
 
-                let partySizeOptionsHtml = "";
+                const savedQueueSize = localStorage.getItem(`saved_queue_size_${shopId}`) || "1";
+                const savedTimeslotSize = localStorage.getItem(`saved_timeslot_size_${shopId}`) || "1";
+
+                let partySizeOptionsHtmlQueue = "";
+                let partySizeOptionsHtmlTimeslot = "";
                 for (let i = 1; i <= 5; i++) {
-                    partySizeOptionsHtml += `<option value="${i}" ${i === 2 ? 'selected' : ''}>${i}人</option>`;
+                    partySizeOptionsHtmlQueue += `<option value="${i}" ${String(i) === String(savedQueueSize) ? 'selected' : ''}>${i}人</option>`;
+                    partySizeOptionsHtmlTimeslot += `<option value="${i}" ${String(i) === String(savedTimeslotSize) ? 'selected' : ''}>${i}人</option>`;
                 }
 
                 let queueActionHtml = isQueueStopped ? 
@@ -420,14 +454,20 @@ async function loadShops() {
                     <div style="margin-bottom: 10px;">
                         <label>順番待ちの人数: </label>
                         <select id="queue-size-${shopId}" style="padding: 6px;">
-                            ${partySizeOptionsHtml}
+                            ${partySizeOptionsHtmlQueue}
                         </select>
                     </div>
                     <button id="queue-btn-${shopId}" style="background: #00c300; color:white; border:none; padding:12px; border-radius:6px; font-weight:bold; width:100%; cursor:pointer;">順番待ちを発行する</button>
                 `;
 
-                const card = document.createElement("div");
-                card.className = "card";
+                let card = document.getElementById(`shop-card-${shopId}`);
+                if (!card) {
+                    card = document.createElement("div");
+                    card.className = "card";
+                    card.id = `shop-card-${shopId}`;
+                    mainContent.appendChild(card);
+                }
+
                 card.innerHTML = `
                     <h2>${data.name}</h2>
                     <p>現在の待ち人数: <strong>${totalWaitingPeople}</strong> 人（およそ約 ${totalEstMin} 分待ち）</p>
@@ -446,13 +486,24 @@ async function loadShops() {
                     <div style="margin-top: 10px; margin-bottom: 8px;" id="timeslot-size-area-${shopId}">
                         <label style="font-size: 13px; font-weight: bold;">予約人数: </label>
                         <select id="timeslot-party-size-${shopId}" style="padding: 6px;">
-                            ${partySizeOptionsHtml}
+                            ${partySizeOptionsHtmlTimeslot}
                         </select>
                     </div>
                     <button id="time-btn-${shopId}" style="background: #6c757d; color:white; border:none; padding:10px; border-radius:5px; width:100%; cursor:pointer;" disabled>時間枠を選んで予約 (${activeDate})</button>
                 `;
-                
-                mainContent.appendChild(card);
+
+                const qSizeSelect = card.querySelector(`#queue-size-${shopId}`);
+                if (qSizeSelect) {
+                    qSizeSelect.addEventListener("change", (e) => {
+                        localStorage.setItem(`saved_queue_size_${shopId}`, e.target.value);
+                    });
+                }
+                const tSizeSelect = card.querySelector(`#timeslot-party-size-${shopId}`);
+                if (tSizeSelect) {
+                    tSizeSelect.addEventListener("change", (e) => {
+                        localStorage.setItem(`saved_timeslot_size_${shopId}`, e.target.value);
+                    });
+                }
 
                 if (isAlreadyBooked) {
                     setTimeout(() => {
@@ -478,7 +529,7 @@ async function loadShops() {
                 card.querySelectorAll(".user-date-tab").forEach(tabBtn => {
                     tabBtn.addEventListener("click", (e) => {
                         userSelectedDates[e.target.getAttribute("data-shopid")] = e.target.getAttribute("data-date");
-                        loadShops();
+                        loadShops(true);
                     });
                 });
 
@@ -487,8 +538,9 @@ async function loadShops() {
                     if (queueBtn) {
                         queueBtn.addEventListener("click", async () => {
                             const partySize = parseInt(card.querySelector(`#queue-size-${shopId}`).value);
+                            localStorage.setItem(`saved_queue_size_${shopId}`, partySize);
                             try {
-                                await addDoc(collection(db, "queues"), {
+                                const newDocRef = await addDoc(collection(db, "queues"), {
                                     shopId: shopId,
                                     shopName: data.name,
                                     date: activeDate,
@@ -498,8 +550,12 @@ async function loadShops() {
                                     type: "queue",
                                     createdAt: serverTimestamp()
                                 });
-                                alert(`順番待ちを発行しました！（${partySize}人）`);
-                                loadShops();
+
+                                const ticketIdShort = newDocRef.id.slice(-4).toUpperCase();
+                                await logCustomerAction("順番待ち発行", `店舗: ${data.name} (${activeDate}) / 予約番号: [${ticketIdShort}] / 人数: ${partySize}人`);
+
+                                alert(`順番待ちを発行しました！（予約番号: ${ticketIdShort} / ${partySize}人）`);
+                                loadShops(true);
                             } catch (e) {
                                 alert("発行に失敗しました。");
                             }
@@ -508,6 +564,8 @@ async function loadShops() {
                 } else if (isAlreadyBooked) {
                     const cancelBtn = card.querySelector(`#cancel-btn-${shopId}`);
                     const cancelSelect = card.querySelector(`#cancel-select-${shopId}`);
+                    const ticketIdShort = activeTicketDoc.id.slice(-4).toUpperCase();
+
                     cancelBtn.addEventListener("click", async () => {
                         const cancelVal = cancelSelect.value;
                         const currentPartySize = activeTicketDoc.data().partySize || 1;
@@ -518,16 +576,22 @@ async function loadShops() {
                                     status: "cancelled",
                                     cancelledAt: serverTimestamp()
                                 });
+
+                                await logCustomerAction("予約キャンセル", `店舗: ${data.name} / 予約番号: [${ticketIdShort}] の予約をすべてキャンセルしました`);
+
                                 alert("キャンセルしました。");
-                                loadShops();
+                                loadShops(true);
                             }
                         } else {
                             const cancelCount = parseInt(cancelVal);
                             const newPartySize = currentPartySize - cancelCount;
                             if (confirm(`${cancelCount}人分をキャンセルし、${newPartySize}人に変更しますか？`)) {
                                 await updateDoc(doc(db, "queues", activeTicketDoc.id), { partySize: newPartySize });
+
+                                await logCustomerAction("人数変更・一部キャンセル", `店舗: ${data.name} / 予約番号: [${ticketIdShort}] (${cancelCount}人分キャンセル ➔ 残り${newPartySize}人)`);
+
                                 alert(`${cancelCount}人分をキャンセルしました。`);
-                                loadShops();
+                                loadShops(true);
                             }
                         }
                     });
@@ -558,40 +622,67 @@ async function loadShops() {
                     
                     const partySizeSelectEl = card.querySelector(`#timeslot-party-size-${shopId}`);
                     const partySize = partySizeSelectEl ? parseInt(partySizeSelectEl.value) || 1 : 1;
+                    localStorage.setItem(`saved_timeslot_size_${shopId}`, partySize);
 
-                    const currentLimit = timeSlots[selectedTime] || 0;
-                    const sQueryR = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "reserved"));
-                    const sQueryC = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "completed"));
-                    const [resSnap, compSnap] = await Promise.all([getDocs(sQueryR), getDocs(sQueryC)]);
+                    timeBtn.disabled = true;
+                    timeBtn.innerText = "予約処理中...";
 
-                    let currentSlotConsumed = 0;
-                    resSnap.forEach(sDoc => {
-                        if (sDoc.data().date === activeDate && sDoc.data().timeSlot === selectedTime) currentSlotConsumed += (sDoc.data().partySize || 1);
-                    });
-                    compSnap.forEach(sDoc => {
-                        if (sDoc.data().date === activeDate && sDoc.data().timeSlot === selectedTime) currentSlotConsumed += (sDoc.data().partySize || 1);
-                    });
-                    
-                    if (currentSlotConsumed + partySize > currentLimit) {
-                        const remaining = Math.max(0, currentLimit - currentSlotConsumed);
-                        alert(`申し訳ありません！選択された時間枠の残り人数は ${remaining} 人のため、${partySize} 人での予約はできません。`);
-                        loadShops();
-                        return;
+                    try {
+                        const newTicketId = await runTransaction(db, async (transaction) => {
+                            const currentLimit = timeSlots[selectedTime] || 0;
+
+                            const sQueryR = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "reserved"));
+                            const sQueryC = query(collection(db, "queues"), where("shopId", "==", shopId), where("status", "==", "completed"));
+                            const [resSnap, compSnap] = await Promise.all([getDocs(sQueryR), getDocs(sQueryC)]);
+
+                            let currentSlotConsumed = 0;
+                            resSnap.forEach(sDoc => {
+                                if (sDoc.data().date === activeDate && sDoc.data().timeSlot === selectedTime) {
+                                    currentSlotConsumed += (sDoc.data().partySize || 1);
+                                }
+                            });
+                            compSnap.forEach(sDoc => {
+                                if (sDoc.data().date === activeDate && sDoc.data().timeSlot === selectedTime) {
+                                    currentSlotConsumed += (sDoc.data().partySize || 1);
+                                }
+                            });
+
+                            if (currentSlotConsumed + partySize > currentLimit) {
+                                throw new Error(`OVER_LIMIT:${Math.max(0, currentLimit - currentSlotConsumed)}`);
+                            }
+
+                            const newQueueRef = doc(collection(db, "queues"));
+                            transaction.set(newQueueRef, {
+                                shopId: shopId,
+                                shopName: data.name,
+                                date: activeDate,
+                                partySize: partySize,
+                                deviceUuid: deviceUuid,
+                                status: "reserved",
+                                timeSlot: selectedTime,
+                                type: "timeslot",
+                                createdAt: serverTimestamp()
+                            });
+
+                            return newQueueRef.id;
+                        });
+
+                        const ticketIdShort = newTicketId.slice(-4).toUpperCase();
+                        await logCustomerAction("時間予約完了", `店舗: ${data.name} (${activeDate} ${selectedTime}) / 予約番号: [${ticketIdShort}] / 人数: ${partySize}人`);
+
+                        alert(`${activeDate} ${selectedTime} の時間予約が完了しました！（予約番号: ${ticketIdShort} / ${partySize}人）`);
+                        loadShops(true);
+
+                    } catch (e) {
+                        console.error(e);
+                        if (e.message && e.message.startsWith("OVER_LIMIT:")) {
+                            const remaining = e.message.split(":")[1];
+                            alert(`申し訳ありません！他のユーザーが先に予約を確定したため、この時間枠の残り人数は残り ${remaining} 人となりました。人数を減らすか、別の時間枠をお選びください。`);
+                        } else {
+                            alert("予約処理中にエラーが発生しました。もう一度お試しください。");
+                        }
+                        loadShops(true);
                     }
-
-                    await addDoc(collection(db, "queues"), {
-                        shopId: shopId,
-                        shopName: data.name,
-                        date: activeDate,
-                        partySize: partySize,
-                        deviceUuid: deviceUuid,
-                        status: "reserved",
-                        timeSlot: selectedTime,
-                        type: "timeslot",
-                        createdAt: serverTimestamp()
-                    });
-                    alert(`${activeDate} ${selectedTime} の時間予約が完了しました！（${partySize}人）`);
-                    loadShops();
                 });
             }
         }
@@ -611,9 +702,12 @@ async function loadShops() {
         container.querySelectorAll(".user-nav-tab").forEach(navBtn => {
             navBtn.addEventListener("click", (e) => {
                 userTab = e.target.getAttribute("data-tab");
-                loadShops();
+                isInitialCustomerLoaded = false;
+                loadShops(false);
             });
         });
+
+        updateLastRefreshTime();
 
     } catch (e) {
         console.error("データ取得失敗: ", e);
@@ -623,7 +717,7 @@ async function loadShops() {
 
 checkCustomerAuth().then(authed => {
     if (authed) {
-        loadShops();
+        loadShops(false);
     }
 });
 
@@ -640,14 +734,14 @@ updateLastRefreshTime();
 
 onSnapshot(collection(db, "shops"), () => {
     checkCustomerAuth().then(authed => {
-        if (authed) loadShops();
+        if (authed) loadShops(true);
     });
     updateLastRefreshTime();
 });
 
 onSnapshot(collection(db, "queues"), () => {
     checkCustomerAuth().then(authed => {
-        if (authed) loadShops();
+        if (authed) loadShops(true);
     });
     updateLastRefreshTime();
 });

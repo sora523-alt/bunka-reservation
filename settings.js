@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getFirestore, collection, getDocs, updateDoc, doc, setDoc, getDoc, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, updateDoc, doc, setDoc, getDoc, serverTimestamp, onSnapshot, addDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBQBgoqHNe06FZIDpGYKSNyTkgo7...",
@@ -24,6 +24,20 @@ function getStaffSessionId() {
 }
 
 const staffSessionId = getStaffSessionId();
+
+// 💡 操作ログを記録するヘルパー関数
+async function logAction(action, details) {
+    try {
+        await addDoc(collection(db, "action_logs"), {
+            uuid: staffSessionId,
+            action: action,
+            details: details,
+            createdAt: serverTimestamp()
+        });
+    } catch (e) {
+        console.error("ログ記録エラー", e);
+    }
+}
 
 function getExpectedToken() {
     const now = new Date();
@@ -55,6 +69,35 @@ async function checkStaffAuth() {
     return false;
 }
 
+// 🔒 管理画面からの強制ログアウトおよびオレンジ色ロックを監視・制御
+onSnapshot(doc(db, "staff_sessions", staffSessionId), (docSnap) => {
+    if (!docSnap.exists() && localStorage.getItem("staff_authenticated") === "true") {
+        alert("管理者に強制ログアウトされました。");
+        localStorage.removeItem("staff_authenticated");
+        location.reload();
+        return;
+    }
+
+    if (docSnap.exists()) {
+        const data = docSnap.data();
+        const overlay = document.getElementById("staff-orange-lock-overlay");
+        if (data.isLocked === true) {
+            if (!overlay) {
+                const lockDiv = document.createElement("div");
+                lockDiv.id = "staff-orange-lock-overlay";
+                lockDiv.style.cssText = "position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: orange; z-index: 999999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; font-size: 32px; font-weight: bold; text-align: center; padding: 20px;";
+                lockDiv.innerHTML = `
+                    <div>🔒 この端末は管理者によって一時的にロックされています</div>
+                    <div style="font-size: 16px; margin-top: 15px; font-weight: normal;">トークン管理画面から解除されるまで操作できません。</div>
+                `;
+                document.body.appendChild(lockDiv);
+            }
+        } else {
+            if (overlay) overlay.remove();
+        }
+    }
+});
+
 document.addEventListener("DOMContentLoaded", () => {
     const submitBtn = document.getElementById("auth-submit-btn");
     const tokenInput = document.getElementById("auth-token-input");
@@ -69,8 +112,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 localStorage.setItem("staff_authenticated", "true");
                 await setDoc(doc(db, "staff_sessions", staffSessionId), {
                     loginAt: serverTimestamp(),
-                    userAgent: navigator.userAgent
+                    userAgent: navigator.userAgent,
+                    isLocked: false
                 });
+                await logAction("スタッフログイン(設定画面)", `端末ID: ${staffSessionId} が設定画面にログインしました`);
                 document.getElementById("auth-overlay").style.display = "none";
                 loadSettingsView();
             } else {
@@ -101,6 +146,15 @@ function formatAutoDate(inputStr) {
         return `${y}年${m}月${d}日`;
     }
     return inputStr.trim();
+}
+
+function updateLastRefreshTime() {
+    const now = new Date();
+    const timeString = now.toLocaleTimeString();
+    const updateEl = document.getElementById('last-updated');
+    if (updateEl) {
+        updateEl.textContent = `最終更新: ${timeString}`;
+    }
 }
 
 let selectedShopId = null;
@@ -213,7 +267,7 @@ async function loadSettingsView() {
 
             <div style="margin-top: 15px; background: #f0f4f8; padding: 12px; border-radius: 6px; border: 1px solid #d1d9e0;">
                 <label><strong style="color: #333;">⏰ 予約枠の事前締め切り設定:</strong></label><br>
-                <input type="number" id="close-input" value="${closeBeforeMinutes}" style="width: 80px; padding: 6px; margin-top: 4px;"> 分前になったら、その予約枠を自動的に非表示にして締め切る <span style="font-size:12px; color:#666;">(0で直前まで受付)</span>
+                <input type="number" id="close-input" value="${closeBeforeMinutes}" style="width: 80px; padding: 6px; margin-top: 4px;"> 分前になったら、その予約枠を自動的に非表示にして締め切る(開始時刻基準) <span style="font-size:12px; color:#666;">(0で直前まで受付)</span>
             </div>
 
             <div style="margin-top: 20px; border-top: 1px dashed #ccc; padding-top: 15px;">
@@ -261,6 +315,8 @@ async function loadSettingsView() {
 
         container.appendChild(mainCard);
 
+        updateLastRefreshTime();
+
         mainCard.querySelectorAll(".shop-select-tab").forEach(btn => {
             btn.addEventListener("click", (e) => {
                 selectedShopId = e.target.getAttribute("data-shopid");
@@ -275,7 +331,6 @@ async function loadSettingsView() {
             });
         });
 
-        // 🗑️ 【追加】選択中の日付を削除するボタンのイベント処理
         const deleteActiveDateBtn = mainCard.querySelector("#delete-active-date-btn");
         if (deleteActiveDateBtn) {
             deleteActiveDateBtn.addEventListener("click", async () => {
@@ -285,10 +340,8 @@ async function loadSettingsView() {
                 }
 
                 if (confirm(`本当に「${activeSettingDate}」の設定を削除しますか？`)) {
-                    // 該当の日付をマップから削除
                     delete dateSlotsMap[activeSettingDate];
                     
-                    // 残った日付の中から最初の日付を次のアクティブ日付に設定
                     const remainingDates = Object.keys(dateSlotsMap);
                     activeSettingDate = remainingDates[0];
 
@@ -297,6 +350,7 @@ async function loadSettingsView() {
                             dateSlots: dateSlotsMap,
                             timeSlots: dateSlotsMap[todayStr] || dateSlotsMap[activeSettingDate] || {}
                         });
+                        await logAction("店舗設定削除", `店舗: ${shopData.name} の日付設定(${activeSettingDate})を削除しました`);
                         alert(`「${activeSettingDate}」を削除しました。`);
                         loadSettingsView();
                     } catch (err) {
@@ -307,7 +361,6 @@ async function loadSettingsView() {
             });
         }
 
-        // 📅 新しい日付を追加する処理
         const addDateBtn = mainCard.querySelector("#add-date-btn");
         if (addDateBtn) {
             addDateBtn.addEventListener("click", async () => {
@@ -324,7 +377,6 @@ async function loadSettingsView() {
                     return;
                 }
 
-                // 新しい日付の枠を追加（初期値として空または既存の枠をコピー）
                 dateSlotsMap[formattedDate] = { "10:00-10:30": 5, "11:00-11:30": 5 };
                 activeSettingDate = formattedDate;
 
@@ -332,6 +384,7 @@ async function loadSettingsView() {
                     await updateDoc(doc(db, "shops", selectedShopId), {
                         dateSlots: dateSlotsMap
                     });
+                    await logAction("店舗設定追加", `店舗: ${shopData.name} に新しい日付(${formattedDate})を追加しました`);
                     alert(`新しい日付「${formattedDate}」を追加しました！`);
                     loadSettingsView();
                 } catch (e) {
@@ -434,13 +487,56 @@ async function loadSettingsView() {
                 if (time) newTimeSlots[time] = limit;
             });
 
-            dateSlotsMap[activeSettingDate] = newTimeSlots;
-
             const newGroupSize = parseInt(mainCard.querySelector("#group-size-input").value) || 4;
             const newMinutesPerGroup = parseInt(mainCard.querySelector("#time-per-group-input").value) || 10;
             const newExpireMinutes = parseInt(mainCard.querySelector("#expire-input").value);
+            const newExpireVal = isNaN(newExpireMinutes) ? 1 : newExpireMinutes;
             const newTimeslotExpireMinutes = parseInt(mainCard.querySelector("#timeslot-expire-input").value);
+            const newTimeslotExpireVal = isNaN(newTimeslotExpireMinutes) ? 10 : newTimeslotExpireMinutes;
             const newCloseMinutes = parseInt(mainCard.querySelector("#close-input").value) || 0;
+
+            const changes = [];
+            if (standardGroupSize !== newGroupSize) {
+                changes.push(`基準人数: ${standardGroupSize}人 ➔ ${newGroupSize}人`);
+            }
+            if (minutesPerGroup !== newMinutesPerGroup) {
+                changes.push(`1組の時間: ${minutesPerGroup}分 ➔ ${newMinutesPerGroup}分`);
+            }
+            if (autoExpireMinutes !== newExpireVal) {
+                changes.push(`呼び出し猶予: ${autoExpireMinutes}分 ➔ ${newExpireVal}分`);
+            }
+            if (timeslotExpireMinutes !== newTimeslotExpireVal) {
+                changes.push(`予約枠猶予: ${timeslotExpireMinutes}分 ➔ ${newTimeslotExpireVal}分`);
+            }
+            if (closeBeforeMinutes !== newCloseMinutes) {
+                changes.push(`事前締め切り: ${closeBeforeMinutes}分前 ➔ ${newCloseMinutes}分前`);
+            }
+
+            const oldSlots = currentSlots || {};
+            const addedSlots = [];
+            const removedSlots = [];
+            const modifiedSlots = [];
+
+            for (const [time, limit] of Object.entries(newTimeSlots)) {
+                if (!(time in oldSlots)) {
+                    addedSlots.push(`${time}(定員${limit}人)`);
+                } else if (oldSlots[time] !== limit) {
+                    modifiedSlots.push(`${time}(${oldSlots[time]}人➔${limit}人)`);
+                }
+            }
+            for (const time of Object.keys(oldSlots)) {
+                if (!(time in newTimeSlots)) {
+                    removedSlots.push(time);
+                }
+            }
+
+            if (addedSlots.length > 0) changes.push(`枠追加: [${addedSlots.join(', ')}]`);
+            if (removedSlots.length > 0) changes.push(`枠削除: [${removedSlots.join(', ')}]`);
+            if (modifiedSlots.length > 0) changes.push(`枠定員変更: [${modifiedSlots.join(', ')}]`);
+
+            const diffText = changes.length > 0 ? changes.join(" / ") : "設定値の変更なし（保存実行）";
+
+            dateSlotsMap[activeSettingDate] = newTimeSlots;
 
             try {
                 await updateDoc(doc(db, "shops", selectedShopId), {
@@ -448,10 +544,12 @@ async function loadSettingsView() {
                     timeSlots: dateSlotsMap[todayStr] || newTimeSlots,
                     standardGroupSize: newGroupSize,
                     minutesPerGroup: newMinutesPerGroup,
-                    autoExpireMinutes: isNaN(newExpireMinutes) ? 1 : newExpireMinutes,
-                    timeslotExpireMinutes: isNaN(newTimeslotExpireMinutes) ? 10 : newTimeslotExpireMinutes,
+                    autoExpireMinutes: newExpireVal,
+                    timeslotExpireMinutes: newTimeslotExpireVal,
                     closeBeforeMinutes: newCloseMinutes
                 });
+
+                await logAction("店舗設定変更", `店舗: ${shopData.name} (${activeSettingDate}) の設定を変更しました ➔ 【 ${diffText} 】`);
                 alert("店舗の設定を保存しました！");
                 loadSettingsView();
             } catch (err) {
